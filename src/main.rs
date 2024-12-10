@@ -101,21 +101,24 @@ fn main() -> Result<(), AppError> {
         }
     };
 
-    // If the file only contains the header, set the resume height to 1
-    let resume_height = if resume_height == 0 { 1 } else { resume_height };
+    // Increment resume_height to start from the next block
+    let resume_height = resume_height.checked_add(1).unwrap_or(1);
+
+    // Optional: Log the adjusted resume height
+    println!("Resuming from height {}", resume_height);
 
     // Get the last line of the CSV file and parse the P2PK addresses and coins from it
     let (p2pk_addresses, p2pk_coins) = {
         let out_lock = out.lock().unwrap();
         if let Some(last_line) = out_lock.last() {
             let fields: Vec<&str> = last_line.split(',').collect();
-            let p2pk_addresses: i32 = if fields.len() >= 3 {
-                fields[2].parse().unwrap_or(0)
+            let p2pk_addresses: i32 = if fields.len() >= 2 {
+                fields[1].parse().unwrap_or(0)
             } else {
                 0
             };
-            let p2pk_coins: i64 = if fields.len() >= 4 {
-                fields[3].parse().unwrap_or(0)
+            let p2pk_coins: i64 = if fields.len() >= 3 {
+                fields[2].parse().unwrap_or(0)
             } else {
                 0
             };
@@ -124,6 +127,9 @@ fn main() -> Result<(), AppError> {
             (0, 0)
         }
     };
+
+    // If the file only contains the header, set the resume height to 1
+    let resume_height = if resume_height == 0 { 1 } else { resume_height };
 
     println!(
         "Resuming from height {}, P2PK addresses: {}, P2PK satoshis: {}",
