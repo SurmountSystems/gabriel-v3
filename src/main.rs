@@ -2,18 +2,16 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, Write},
     net,
+    sync::mpsc,
     sync::{Arc, Mutex},
     thread,
 };
 
-use crossbeam_channel::{bounded, Sender};
-use nakamoto::{
-    client::{
-        network::{Network, Services},
-        traits::Handle,
-        Client, Config,
-    },
-    common,
+use crossbeam_channel::bounded;
+use nakamoto::client::{
+    network::{Network, Services},
+    traits::Handle,
+    Client, Config,
 };
 use thiserror::Error;
 
@@ -38,33 +36,29 @@ pub enum AppError {
     SledError(#[from] sled::Error),
 }
 
-fn run_with_error_channel<F>(task: F) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+/// Function to spawn a thread and handle errors asynchronously
+fn spawn_thread<F>(task: F) -> mpsc::Receiver<Result<(), Box<dyn std::error::Error + Send + Sync>>>
 where
-    F: FnOnce(Sender<Box<dyn std::error::Error + Send + Sync>>) + Send + 'static,
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
 {
-    let (err_sender, err_receiver) = bounded::<Box<dyn std::error::Error + Send + Sync>>(1);
-
-    // Spawn a new thread to run the task
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        task(err_sender);
+        let result = task();
+        let _ = tx.send(result);
     });
-
-    // Wait for an error from the child thread
-    match err_receiver.recv() {
-        Ok(err) => Err(err),
-        Err(_) => Ok(()), // No errors reported
-    }
+    rx
 }
 
 /// Run the light-client.
 fn main() -> Result<(), AppError> {
-    // Initialize sled database
+    println!("Initializing sled database...");
     let db = sled::open("db")?;
     let db = Arc::new(db); // Wrap in Arc for thread-safe sharing
 
-    // Wrap the 'out' vector in Arc and Mutex for thread-safe sharing
+    println!("Initializing output vector...");
     let out = Arc::new(Mutex::new(Vec::<String>::new()));
 
+    println!("Opening or creating 'out.csv'...");
     // Open the file if it exists, otherwise create it
     let file = OpenOptions::new()
         .read(true)
@@ -92,6 +86,7 @@ fn main() -> Result<(), AppError> {
         out_lock.extend(content.lines().map(|line| line.to_string()));
     }
 
+    println!("Determining resume height and P2PK stats...");
     // Get the last line of the CSV file and parse the height from it
     let resume_height = {
         let out_lock = out.lock().unwrap();
@@ -131,118 +126,123 @@ fn main() -> Result<(), AppError> {
         }
     };
 
+    println!(
+        "Resuming from height {}, P2PK addresses: {}, P2PK satoshis: {}",
+        resume_height, p2pk_addresses, p2pk_coins
+    );
+
+    println!("Configuring Nakamoto client...");
     let cfg = Config::new(Network::Mainnet);
 
+    println!("Creating Nakamoto client...");
     // Create a client using the above network reactor.
     let client = Client::<Reactor>::new()?;
     let header_handle = client.handle();
     let block_handle = client.handle();
 
+    println!("Setting up block processed channel...");
     // Create a channel to signal when a block has been processed.
     let (block_processed_tx, block_processed_rx) = bounded::<u32>(1);
 
-    // Run the client on a different thread, to not block the main thread.
-    run_with_error_channel(move |err_sender| match client.run(cfg) {
-        Ok(_) => (),
-        Err(e) => {
-            let boxed_err: Box<dyn std::error::Error + Send + Sync> = Box::new(e);
-            if let Err(e) = err_sender.send(boxed_err) {
-                eprintln!("Failed to send error: {}", e);
-            }
-        }
-    })?;
+    println!("Spawning client thread...");
+    // Spawn the client thread
+    let client_rx = spawn_thread(move || {
+        client
+            .run(cfg)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    });
 
-    // Wait for the client to be connected to peers.
+    println!("Waiting for peers to connect...");
     header_handle.wait_for_peers(8, Services::Chain)?;
+    println!("Connected to 8 peers.");
 
-    // Loop through the first n blocks and print the hash and txs.
+    println!("Fetching tip height...");
+    // Get the tip height of the blockchain
     let (tip_height, _) = header_handle.get_tip()?;
+    println!("Current tip height: {}", tip_height);
 
-    // Clone the Arc to move into the thread
+    println!("Spawning block processing thread...");
+    // Clone the necessary Arcs for the processing thread
     let out_clone = Arc::clone(&out);
-    // Get blocks from the client
-    run_with_error_channel(move |err_sender| {
-        let res = {
-            let mut p2pk_tx_count: i32 = p2pk_addresses;
-            let mut p2pk_satoshis: i64 = p2pk_coins;
+    let db_clone = Arc::clone(&db);
 
-            println!("Starting block thread");
-            let blocks = block_handle.blocks();
-            while let Ok((block, height)) = blocks.recv() {
-                println!("Block {} txs: {:?}", height, block.txdata.len());
+    // Spawn the block processing thread
+    let block_processor_rx = spawn_thread(move || {
+        let mut p2pk_tx_count: i32 = p2pk_addresses;
+        let mut p2pk_satoshis: i64 = p2pk_coins;
 
-                // Scan the block for P2PK transactions
-                for tx in block.txdata.iter() {
-                    let txid = tx.txid();
+        println!("Starting block processing thread...");
 
-                    for (i, output) in tx.output.iter().enumerate() {
-                        if output.script_pubkey.is_p2pk() {
-                            db.insert(
-                                format!("{}:{}", txid, i).as_bytes(),
-                                output.value.to_le_bytes().to_vec(),
-                            )
-                            .unwrap();
+        for (block, height) in block_handle.blocks() {
+            println!(
+                "Processing Block {}: {} transactions",
+                height,
+                block.txdata.len()
+            );
 
-                            p2pk_tx_count += 1;
-                            p2pk_satoshis += output.value as i64;
-                        }
-                    }
+            // Scan the block for P2PK transactions
+            for tx in block.txdata.iter() {
+                let txid = tx.txid();
 
-                    for input in tx.input.iter() {
-                        let input_txid = input.previous_output.txid;
-                        let input_vout = input.previous_output.vout;
-                        let input_key = format!("{}:{}", input_txid, input_vout);
-                        if let Some(value_bytes) = db.get(input_key.as_bytes()).unwrap() {
-                            let value =
-                                i64::from_le_bytes(value_bytes.as_ref().try_into().unwrap());
-                            p2pk_tx_count -= 1;
-                            p2pk_satoshis -= value;
-                            db.remove(input_key.as_bytes()).unwrap();
-                            let content = {
-                                let out_lock = out_clone.lock().unwrap();
-                                out_lock.join("\n")
-                            };
-                            File::create("out.csv")
-                                .and_then(|mut file| file.write_all(content.as_bytes()))
-                                .unwrap_or_else(|e| {
-                                    eprintln!("Failed to write to file: {}", e);
-                                });
-                        }
+                for (i, output) in tx.output.iter().enumerate() {
+                    if output.script_pubkey.is_p2pk() {
+                        db_clone.insert(
+                            format!("{}:{}", txid, i).as_bytes(),
+                            output.value.to_le_bytes().to_vec(),
+                        )?;
+
+                        p2pk_tx_count += 1;
+                        p2pk_satoshis += output.value as i64;
                     }
                 }
 
-                println!("P2PK: {:?}, {:?}", p2pk_tx_count, p2pk_satoshis);
+                for input in tx.input.iter() {
+                    let input_txid = input.previous_output.txid;
+                    let input_vout = input.previous_output.vout;
+                    let input_key = format!("{}:{}", input_txid, input_vout);
+                    if let Some(value_bytes) = db_clone.get(input_key.as_bytes())? {
+                        let value = i64::from_le_bytes(value_bytes.as_ref().try_into().unwrap());
+                        p2pk_tx_count -= 1;
+                        p2pk_satoshis -= value;
+                        db_clone.remove(input_key.as_bytes())?;
 
-                // Signal that we've processed this block
-                if let Err(e) = block_processed_tx.send(height as u32) {
-                    let boxed_err: Box<dyn std::error::Error + Send + Sync> =
-                        Box::new(AppError::ChannelSend(e));
-                    if let Err(send_err) = err_sender.send(boxed_err) {
-                        eprintln!("Failed to send error: {}", send_err);
+                        // Update the CSV file
+                        let content = {
+                            let out_lock = out_clone.lock().unwrap();
+                            out_lock.join("\n")
+                        };
+                        File::create("out.csv")?.write_all(content.as_bytes())?;
                     }
                 }
             }
 
-            Ok(())
-        };
-        match res {
-            Ok(_) => (),
-            Err(e) => {
-                let boxed_err: Box<dyn std::error::Error + Send + Sync> =
-                    Box::new(AppError::ChannelSend(e));
-                if let Err(send_err) = err_sender.send(boxed_err) {
-                    eprintln!("Failed to send error: {}", send_err);
-                }
-            }
+            println!(
+                "P2PK Transactions: {}, P2PK Satoshis: {}",
+                p2pk_tx_count, p2pk_satoshis
+            );
+
+            // Signal that we've processed this block
+            block_processed_tx.send(height as u32)?;
         }
-    })?;
 
-    for i in resume_height..tip_height {
+        Ok(())
+    });
+
+    println!(
+        "Processing blocks from {} to {}...",
+        resume_height, tip_height
+    );
+
+    for i in resume_height..=tip_height {
+        println!("Fetching block at height {}...", i);
         let block_header = header_handle.get_block_by_height(i)?;
-
-        let block_hash = block_header.map(|h| h.block_hash()).ok_or_else(|| {
-            nakamoto::client::Error::Chain(common::block::tree::Error::InvalidBlockHeight(i))
-        })?;
+        let block_hash = match block_header {
+            Some(h) => h.block_hash(),
+            None => {
+                eprintln!("No block found at height {}", i);
+                continue;
+            }
+        };
 
         println!("Block {} hash: {:?}", i, block_hash);
 
@@ -254,16 +254,21 @@ fn main() -> Result<(), AppError> {
             Ok(height) => {
                 assert_eq!(
                     height, i as u32,
-                    "Received block height doesn't match requested height"
+                    "Received block height {} doesn't match requested height {}",
+                    height, i
                 );
+                println!("Successfully processed block {}", height);
             }
             Err(e) => {
-                println!("Error waiting for block processing: {}", e);
+                eprintln!("Error waiting for block processing: {}", e);
                 break;
             }
         }
     }
 
+    println!("All blocks processed up to height {}.", tip_height);
+
+    println!("Updating 'out.csv' with final data...");
     // When writing back to the file, ensure we start from the beginning
     let mut file = file.try_clone()?;
     {
@@ -275,7 +280,31 @@ fn main() -> Result<(), AppError> {
         }
     }
 
+    println!("Shutting down Nakamoto client...");
     // Ask the client to terminate.
     header_handle.shutdown()?;
+    println!("Client shut down gracefully.");
+
+    // Handle potential errors from the client thread
+    match client_rx.recv() {
+        Ok(Err(e)) => {
+            eprintln!("Client encountered an error: {}", e);
+            return Err(AppError::Other(e));
+        }
+        Ok(Ok(_)) => println!("Client thread terminated gracefully."),
+        Err(e) => eprintln!("Failed to receive from client thread: {}", e),
+    }
+
+    // Handle potential errors from the block processing thread
+    match block_processor_rx.recv() {
+        Ok(Err(e)) => {
+            eprintln!("Block processor encountered an error: {}", e);
+            return Err(AppError::Other(e));
+        }
+        Ok(Ok(_)) => println!("Block processor thread terminated gracefully."),
+        Err(e) => eprintln!("Failed to receive from block processor thread: {}", e),
+    }
+
+    println!("Program completed successfully.");
     Ok(())
 }
