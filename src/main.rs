@@ -33,6 +33,8 @@ pub enum AppError {
     ChannelSend(#[from] crossbeam_channel::SendError<u32>),
     #[error(transparent)]
     SledError(#[from] sled::Error),
+    #[error("{0}")]
+    CustomError(String),
 }
 
 /// Function to spawn a thread and handle errors asynchronously
@@ -308,24 +310,44 @@ fn main() -> Result<(), AppError> {
     header_handle.shutdown()?;
     println!("Client shut down gracefully.");
 
-    // Handle potential errors from the client thread
-    match client_rx.recv() {
+    // Handle potential errors from both threads
+    let client_result = client_rx.recv();
+    let block_processor_result = block_processor_rx.recv();
+
+    // Handle client thread result
+    match client_result {
         Ok(Err(e)) => {
             eprintln!("Client encountered an error: {}", e);
             return Err(AppError::Other(e));
         }
-        Ok(Ok(_)) => println!("Client thread terminated gracefully."),
-        Err(e) => eprintln!("Failed to receive from client thread: {}", e),
+        Ok(Ok(_)) => {
+            println!("Client thread terminated gracefully.");
+        }
+        Err(e) => {
+            eprintln!("Failed to receive from client thread: {}", e);
+            return Err(AppError::CustomError(format!(
+                "Failed to receive from client thread: {}",
+                e
+            )));
+        }
     }
 
-    // Handle potential errors from the block processing thread
-    match block_processor_rx.recv() {
+    // Handle block processor thread result
+    match block_processor_result {
         Ok(Err(e)) => {
             eprintln!("Block processor encountered an error: {}", e);
             return Err(AppError::Other(e));
         }
-        Ok(Ok(_)) => println!("Block processor thread terminated gracefully."),
-        Err(e) => eprintln!("Failed to receive from block processor thread: {}", e),
+        Ok(Ok(_)) => {
+            println!("Block processor thread terminated gracefully.");
+        }
+        Err(e) => {
+            eprintln!("Failed to receive from block processor thread: {}", e);
+            return Err(AppError::CustomError(format!(
+                "Failed to receive from block processor thread: {}",
+                e
+            )));
+        }
     }
 
     println!("Program completed successfully.");
