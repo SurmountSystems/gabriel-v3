@@ -94,17 +94,21 @@ fn main() -> Result<(), AppError> {
         if let Some(last_line) = out_lock.last() {
             let fields: Vec<&str> = last_line.split(',').collect();
             if let Some(height_str) = fields.first() {
-                height_str.parse::<u64>().unwrap_or(1)
+                height_str.parse::<u64>().unwrap_or(0)
             } else {
-                1
+                0
             }
         } else {
-            1
+            0
         }
     };
 
-    // Increment resume_height to start from the next block
-    let resume_height = resume_height.checked_add(1).unwrap_or(1);
+    // Increment resume_height to start from the next block only if it's not zero
+    let resume_height = if resume_height > 0 {
+        resume_height.checked_add(1).unwrap_or(1)
+    } else {
+        1
+    };
 
     // Optional: Log the adjusted resume height
     println!("Resuming from height {}", resume_height);
