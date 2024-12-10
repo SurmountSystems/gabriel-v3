@@ -310,44 +310,41 @@ fn main() -> Result<(), AppError> {
     header_handle.shutdown()?;
     println!("Client shut down gracefully.");
 
-    // Handle potential errors from both threads
-    let client_result = client_rx.recv();
-    let block_processor_result = block_processor_rx.recv();
+    // Handle potential errors from both threads simultaneously
+    let (client_result, block_processor_result) = (client_rx.recv(), block_processor_rx.recv());
 
-    // Handle client thread result
-    match client_result {
-        Ok(Err(e)) => {
-            eprintln!("Client encountered an error: {}", e);
-            return Err(AppError::Other(e));
-        }
-        Ok(Ok(_)) => {
-            println!("Client thread terminated gracefully.");
-        }
-        Err(e) => {
-            eprintln!("Failed to receive from client thread: {}", e);
-            return Err(AppError::CustomError(format!(
-                "Failed to receive from client thread: {}",
-                e
-            )));
-        }
+    // Check client thread result
+    if let Ok(Err(e)) = client_result {
+        eprintln!("Client encountered an error: {}", e);
+        return Err(AppError::Other(e));
+    } else if let Ok(Ok(_)) = client_result {
+        println!("Client thread terminated gracefully.");
+        return Err(AppError::CustomError(
+            "Client thread terminated gracefully.".to_owned(),
+        ));
+    } else if let Err(e) = client_result {
+        eprintln!("Failed to receive from client thread: {}", e);
+        return Err(AppError::CustomError(format!(
+            "Failed to receive from client thread: {}",
+            e
+        )));
     }
 
-    // Handle block processor thread result
-    match block_processor_result {
-        Ok(Err(e)) => {
-            eprintln!("Block processor encountered an error: {}", e);
-            return Err(AppError::Other(e));
-        }
-        Ok(Ok(_)) => {
-            println!("Block processor thread terminated gracefully.");
-        }
-        Err(e) => {
-            eprintln!("Failed to receive from block processor thread: {}", e);
-            return Err(AppError::CustomError(format!(
-                "Failed to receive from block processor thread: {}",
-                e
-            )));
-        }
+    // Check block processor thread result
+    if let Ok(Err(e)) = block_processor_result {
+        eprintln!("Block processor encountered an error: {}", e);
+        return Err(AppError::Other(e));
+    } else if let Ok(Ok(_)) = block_processor_result {
+        println!("Block processor thread terminated gracefully.");
+        return Err(AppError::CustomError(
+            "Block processor thread terminated gracefully.".to_owned(),
+        ));
+    } else if let Err(e) = block_processor_result {
+        eprintln!("Failed to receive from block processor thread: {}", e);
+        return Err(AppError::CustomError(format!(
+            "Failed to receive from block processor thread: {}",
+            e
+        )));
     }
 
     println!("Program completed successfully.");
