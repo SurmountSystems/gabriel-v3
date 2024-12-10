@@ -1,9 +1,8 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::{rename, File, OpenOptions},
     io::{Read, Seek, Write},
     net,
-    sync::mpsc,
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     thread,
 };
 
@@ -220,6 +219,24 @@ fn main() -> Result<(), AppError> {
                 "P2PK Transactions: {}, P2PK Satoshis: {}",
                 p2pk_tx_count, p2pk_satoshis
             );
+
+            // Append new entry to 'out'
+            {
+                let mut out_lock = out_clone.lock().unwrap();
+                let new_entry = format!("{},{},{}", height, p2pk_tx_count, p2pk_satoshis);
+                out_lock.push(new_entry);
+            }
+
+            // Update the CSV file atomically
+            {
+                let content = {
+                    let out_lock = out_clone.lock().unwrap();
+                    out_lock.join("\n")
+                };
+                let temp_path = "out.csv.tmp";
+                File::create(temp_path)?.write_all(content.as_bytes())?;
+                rename(temp_path, "out.csv")?;
+            }
 
             // Signal that we've processed this block
             block_processed_tx.send(height as u32)?;
