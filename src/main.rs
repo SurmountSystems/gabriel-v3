@@ -163,10 +163,9 @@ fn main() -> Result<(), AppError> {
     header_handle.wait_for_peers(4, Services::Chain)?;
     println!("Connected to 4 peers.");
 
-    println!("Fetching tip height...");
-    // Get the tip height of the blockchain
-    let (tip_height, _) = header_handle.get_tip()?;
-    println!("Current tip height: {}", tip_height);
+    println!("Fetching initial tip height...");
+    let (mut tip_height, _) = header_handle.get_tip()?;
+    println!("Initial tip height: {}", tip_height);
 
     println!("Spawning block processing thread...");
     // Clone the necessary Arcs for the processing thread
@@ -258,6 +257,7 @@ fn main() -> Result<(), AppError> {
         resume_height, tip_height
     );
 
+    #[allow(clippy::mut_range_bound)]
     for i in resume_height..=tip_height {
         println!("Fetching block at height {}...", i);
         let block_header = header_handle.get_block_by_height(i)?;
@@ -288,6 +288,13 @@ fn main() -> Result<(), AppError> {
                 eprintln!("Error waiting for block processing: {}", e);
                 break;
             }
+        }
+
+        // Update the tip height after processing each block
+        let (new_tip_height, _) = header_handle.get_tip()?;
+        if new_tip_height > tip_height {
+            println!("New tip height detected: {}", new_tip_height);
+            tip_height = new_tip_height;
         }
     }
 
