@@ -153,8 +153,8 @@ fn main() -> Result<(), AppError> {
     });
 
     println!("Waiting for peers to connect...");
-    header_handle.wait_for_peers(8, Services::Chain)?;
-    println!("Connected to 8 peers.");
+    header_handle.wait_for_peers(4, Services::Chain)?;
+    println!("Connected to 4 peers.");
 
     println!("Fetching tip height...");
     // Get the tip height of the blockchain
