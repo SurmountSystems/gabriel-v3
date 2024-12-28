@@ -13,6 +13,10 @@ use nakamoto::client::{
     Client, Config,
 };
 use thiserror::Error;
+use log::info;
+
+mod persistence;
+mod util;
 
 /// The network reactor we're going to use.
 type Reactor = nakamoto::net::poll::Reactor<net::TcpStream>;
@@ -33,6 +37,8 @@ pub enum AppError {
     ChannelSend(#[from] crossbeam_channel::SendError<u32>),
     #[error(transparent)]
     SledError(#[from] sled::Error),
+    #[error(transparent)]
+    SqliteError(#[from] anyhow::Error),
     #[error("{0}")]
     CustomError(String),
 }
@@ -51,15 +57,25 @@ where
 }
 
 /// Run the light-client.
-fn main() -> Result<(), AppError> {
-    println!("Initializing sled database...");
+#[tokio::main]
+async fn main() -> Result<(), AppError> {
+
+    // Initialize env_logger with default level of info
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+
+    info!("Initializing sled key-value store to track P2PK transactions...");
     let db = sled::open("db")?;
     let db = Arc::new(db); // Wrap in Arc for thread-safe sharing
 
-    println!("Initializing output vector...");
+    info!("Initializing sqlite to store block data");
+    let sqlite_persistence = persistence::SQLitePersistence::new(1).await.map_err(|e| AppError::SqliteError(e))?;
+
+    info!("Initializing output vector...");
     let out = Arc::new(Mutex::new(Vec::<String>::new()));
 
-    println!("Opening or creating 'out.csv'...");
+    info!("Opening or creating 'out.csv'...");
     // Open the file if it exists, otherwise create it
     let file = OpenOptions::new()
         .read(true)
@@ -87,19 +103,13 @@ fn main() -> Result<(), AppError> {
         out_lock.extend(content.lines().map(|line| line.to_string()));
     }
 
-    println!("Determining resume height and P2PK stats...");
-    // Get the last line of the CSV file and parse the height from it
+    info!("Determining resume height and P2PK stats...");
+    // Get the last block height from the sqlite database
     let resume_height = {
-        let out_lock = out.lock().unwrap();
-        if let Some(last_line) = out_lock.last() {
-            let fields: Vec<&str> = last_line.split(',').collect();
-            if let Some(height_str) = fields.first() {
-                height_str.parse::<u64>().unwrap_or(0)
-            } else {
-                0
-            }
-        } else {
-            0
+        let last_height = sqlite_persistence.get_last_block_height().await?;
+        match last_height {
+            Some(height) => height as u64,
+            None => 0
         }
     };
 
@@ -110,8 +120,7 @@ fn main() -> Result<(), AppError> {
         1
     };
 
-    // Optional: Log the adjusted resume height
-    println!("Resuming from height {}", resume_height);
+    info!("Resuming from height {}", resume_height);
 
     // Get the last line of the CSV file and parse the P2PK addresses and coins from it
     let (p2pk_addresses, p2pk_coins) = {
@@ -137,25 +146,25 @@ fn main() -> Result<(), AppError> {
     // If the file only contains the header, set the resume height to 1
     let resume_height = if resume_height == 0 { 1 } else { resume_height };
 
-    println!(
+    info!(
         "Resuming from height {}, P2PK addresses: {}, P2PK satoshis: {}",
         resume_height, p2pk_addresses, p2pk_coins
     );
 
-    println!("Configuring Nakamoto client...");
+    info!("Configuring Nakamoto client...");
     let cfg = Config::new(Network::Mainnet);
 
-    println!("Creating Nakamoto client...");
+    info!("Creating Nakamoto client...");
     // Create a client using the above network reactor.
     let client = Client::<Reactor>::new()?;
     let header_handle = client.handle();
     let block_handle = client.handle();
 
-    println!("Setting up block processed channel...");
+    info!("Setting up block processed channel...");
     // Create a channel to signal when a block has been processed.
     let (block_processed_tx, block_processed_rx) = bounded::<u32>(1);
 
-    println!("Spawning client thread...");
+    info!("Spawning client thread...");
     // Spawn the client thread
     let client_rx = spawn_thread(move || {
         client
@@ -163,15 +172,15 @@ fn main() -> Result<(), AppError> {
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     });
 
-    println!("Waiting for peers to connect...");
+    info!("Waiting for peers to connect...");
     header_handle.wait_for_peers(4, Services::Chain)?;
-    println!("Connected to 4 peers.");
+    info!("Connected to 4 peers.");
 
-    println!("Fetching initial tip height...");
+    info!("Fetching initial tip height...");
     let (mut tip_height, _) = header_handle.get_tip()?;
-    println!("Initial tip height: {}", tip_height);
+    info!("Initial tip height: {}", tip_height);
 
-    println!("Spawning block processing thread...");
+    info!("Spawning block processing thread...");
     // Clone the necessary Arcs for the processing thread
     let out_clone = Arc::clone(&out);
     let db_clone = Arc::clone(&db);
@@ -181,10 +190,10 @@ fn main() -> Result<(), AppError> {
         let mut p2pk_tx_count: i32 = p2pk_addresses;
         let mut p2pk_satoshis: i64 = p2pk_coins;
 
-        println!("Starting block processing thread...");
+        info!("Starting block processing thread...");
 
         for (block, height) in block_handle.blocks() {
-            println!(
+            info!(
                 "Processing Block {}: {} transactions",
                 height,
                 block.txdata.len()
@@ -226,7 +235,7 @@ fn main() -> Result<(), AppError> {
                 }
             }
 
-            println!(
+            info!(
                 "P2PK Transactions: {}, P2PK Satoshis: {}",
                 p2pk_tx_count, p2pk_satoshis
             );
@@ -256,14 +265,14 @@ fn main() -> Result<(), AppError> {
         Ok(())
     });
 
-    println!(
+    info!(
         "Processing blocks from {} to {}...",
         resume_height, tip_height
     );
 
     #[allow(clippy::mut_range_bound)]
     for i in resume_height..=tip_height {
-        println!("Fetching block at height {}...", i);
+        info!("Fetching block at height {}...", i);
         let block_header = header_handle.get_block_by_height(i)?;
         let block_hash = match block_header {
             Some(h) => h.block_hash(),
@@ -273,7 +282,7 @@ fn main() -> Result<(), AppError> {
             }
         };
 
-        println!("Block {} hash: {:?}", i, block_hash);
+        info!("Block {} hash: {:?}", i, block_hash);
 
         // Request the block.
         header_handle.get_block(&block_hash)?;
@@ -286,7 +295,7 @@ fn main() -> Result<(), AppError> {
                     "Received block height {} doesn't match requested height {}",
                     height, i
                 );
-                println!("Successfully processed block {}", height);
+                info!("Successfully processed block {}", height);
             }
             Err(e) => {
                 eprintln!("Error waiting for block processing: {}", e);
@@ -297,14 +306,14 @@ fn main() -> Result<(), AppError> {
         // Update the tip height after processing each block
         let (new_tip_height, _) = header_handle.get_tip()?;
         if new_tip_height > tip_height {
-            println!("New tip height detected: {}", new_tip_height);
+            info!("New tip height detected: {}", new_tip_height);
             tip_height = new_tip_height;
         }
     }
 
-    println!("All blocks processed up to height {}.", tip_height);
+    info!("All blocks processed up to height {}.", tip_height);
 
-    println!("Updating 'out.csv' with final data...");
+    info!("Updating 'out.csv' with final data...");
     // When writing back to the file, ensure we start from the beginning
     let mut file = file.try_clone()?;
     {
@@ -316,10 +325,10 @@ fn main() -> Result<(), AppError> {
         }
     }
 
-    println!("Shutting down Nakamoto client...");
+    info!("Shutting down Nakamoto client...");
     // Ask the client to terminate.
     header_handle.shutdown()?;
-    println!("Client shut down gracefully.");
+    info!("Client shut down gracefully.");
 
     // Handle potential errors from both threads simultaneously
     let (client_result, block_processor_result) = (client_rx.recv(), block_processor_rx.recv());
@@ -329,7 +338,7 @@ fn main() -> Result<(), AppError> {
         eprintln!("Client encountered an error: {}", e);
         return Err(AppError::Other(e));
     } else if let Ok(Ok(_)) = client_result {
-        println!("Client thread terminated gracefully.");
+        info!("Client thread terminated gracefully.");
         return Err(AppError::CustomError(
             "Client thread terminated gracefully.".to_owned(),
         ));
@@ -346,7 +355,7 @@ fn main() -> Result<(), AppError> {
         eprintln!("Block processor encountered an error: {}", e);
         return Err(AppError::Other(e));
     } else if let Ok(Ok(_)) = block_processor_result {
-        println!("Block processor thread terminated gracefully.");
+        info!("Block processor thread terminated gracefully.");
         return Err(AppError::CustomError(
             "Block processor thread terminated gracefully.".to_owned(),
         ));
@@ -358,6 +367,6 @@ fn main() -> Result<(), AppError> {
         )));
     }
 
-    println!("Program completed successfully.");
+    info!("Program completed successfully.");
     Ok(())
 }
