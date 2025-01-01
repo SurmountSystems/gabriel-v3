@@ -6,6 +6,7 @@ use std::{
     thread,
 };
 
+use chrono::{Utc, TimeZone};
 use crossbeam_channel::bounded;
 use nakamoto::client::{
     network::{Network, Services},
@@ -13,7 +14,9 @@ use nakamoto::client::{
     Client, Config,
 };
 use thiserror::Error;
-use log::info;
+use log::{info, debug};
+
+use crate::util::BlockAggregateOutput;
 
 mod persistence;
 mod util;
@@ -63,6 +66,7 @@ async fn main() -> Result<(), AppError> {
     // Initialize env_logger with default level of info
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
+        .filter_module("p2p", log::LevelFilter::Warn)
         .init();
 
     info!("Initializing sled key-value store to track P2PK transactions...");
@@ -103,48 +107,31 @@ async fn main() -> Result<(), AppError> {
         out_lock.extend(content.lines().map(|line| line.to_string()));
     }
 
-    info!("Determining resume height and P2PK stats...");
     // Get the last block height from the sqlite database
     let resume_height = {
         let last_height = sqlite_persistence.get_last_block_height().await?;
+        debug!("Last height from database: {:?}", last_height);
         match last_height {
-            Some(height) => height as u64,
-            None => 0
+            Some(height) => height.checked_add(1).unwrap_or(1) as u64,
+            None => 0 // If the database is empty, start from the first block
         }
     };
 
-    // Increment resume_height to start from the next block only if it's not zero
-    let resume_height = if resume_height > 0 {
-        resume_height.checked_add(1).unwrap_or(1)
-    } else {
-        1
-    };
-
-    info!("Resuming from height {}", resume_height);
-
-    // Get the last line of the CSV file and parse the P2PK addresses and coins from it
+    // Get the P2PK addresses and coins from the last processed block
     let (p2pk_addresses, p2pk_coins) = {
-        let out_lock = out.lock().unwrap();
-        if let Some(last_line) = out_lock.last() {
-            let fields: Vec<&str> = last_line.split(',').collect();
-            let p2pk_addresses: i32 = if fields.len() >= 2 {
-                fields[1].parse().unwrap_or(0)
-            } else {
-                0
-            };
-            let p2pk_coins: i64 = if fields.len() >= 3 {
-                fields[2].parse().unwrap_or(0)
-            } else {
-                0
-            };
-            (p2pk_addresses, p2pk_coins)
+        if resume_height > 0 {
+            let last_block = sqlite_persistence.get_block_by_height((resume_height - 1) as i64).await?;
+            match last_block {
+                Some(block) => (
+                    block.total_p2pk_addresses as i32,
+                    block.total_p2pk_value as i64
+                ),
+                None => (0, 0)
+            }
         } else {
             (0, 0)
         }
     };
-
-    // If the file only contains the header, set the resume height to 1
-    let resume_height = if resume_height == 0 { 1 } else { resume_height };
 
     info!(
         "Resuming from height {}, P2PK addresses: {}, P2PK satoshis: {}",
@@ -187,82 +174,92 @@ async fn main() -> Result<(), AppError> {
 
     // Spawn the block processing thread
     let block_processor_rx = spawn_thread(move || {
-        let mut p2pk_tx_count: i32 = p2pk_addresses;
-        let mut p2pk_satoshis: i64 = p2pk_coins;
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async {
+            let mut p2pk_tx_count: i32 = p2pk_addresses;
+            let mut p2pk_satoshis: i64 = p2pk_coins;
 
-        info!("Starting block processing thread...");
+            info!("Starting block processing thread...");
 
-        for (block, height) in block_handle.blocks() {
-            info!(
-                "Processing Block {}: {} transactions",
-                height,
-                block.txdata.len()
-            );
+            for (block, height) in block_handle.blocks() {
+                info!(
+                    "Processing Block {}: {} transactions",
+                    height,
+                    block.txdata.len()
+                );
 
-            // Scan the block for P2PK transactions
-            for tx in block.txdata.iter() {
-                let txid = tx.txid();
+                // Scan the block for P2PK transactions
+                for tx in block.txdata.iter() {
+                    let txid = tx.txid();
 
-                for (i, output) in tx.output.iter().enumerate() {
-                    if output.script_pubkey.is_p2pk() {
-                        db_clone.insert(
-                            format!("{}:{}", txid, i).as_bytes(),
-                            output.value.to_le_bytes().to_vec(),
-                        )?;
+                    for (i, output) in tx.output.iter().enumerate() {
+                        if output.script_pubkey.is_p2pk() {
+                            db_clone.insert(
+                                format!("{}:{}", txid, i).as_bytes(),
+                                output.value.to_le_bytes().to_vec(),
+                            )?;
 
-                        p2pk_tx_count += 1;
-                        p2pk_satoshis += output.value as i64;
+                            p2pk_tx_count += 1;
+                            p2pk_satoshis += output.value as i64;
+                        }
+                    }
+
+                    for input in tx.input.iter() {
+                        let input_txid = input.previous_output.txid;
+                        let input_vout = input.previous_output.vout;
+                        let input_key = format!("{}:{}", input_txid, input_vout);
+                        if let Some(value_bytes) = db_clone.get(input_key.as_bytes())? {
+                            let value = i64::from_le_bytes(value_bytes.as_ref().try_into().unwrap());
+                            p2pk_tx_count -= 1;
+                            p2pk_satoshis -= value;
+                            db_clone.remove(input_key.as_bytes())?;
+                        }
                     }
                 }
 
-                for input in tx.input.iter() {
-                    let input_txid = input.previous_output.txid;
-                    let input_vout = input.previous_output.vout;
-                    let input_key = format!("{}:{}", input_txid, input_vout);
-                    if let Some(value_bytes) = db_clone.get(input_key.as_bytes())? {
-                        let value = i64::from_le_bytes(value_bytes.as_ref().try_into().unwrap());
-                        p2pk_tx_count -= 1;
-                        p2pk_satoshis -= value;
-                        db_clone.remove(input_key.as_bytes())?;
+                info!(
+                    "P2PK Transactions: {}, P2PK Satoshis: {}",
+                    p2pk_tx_count, p2pk_satoshis
+                );
 
-                        // Update the CSV file
-                        let content = {
-                            let out_lock = out_clone.lock().unwrap();
-                            out_lock.join("\n")
-                        };
-                        File::create("out.csv")?.write_all(content.as_bytes())?;
-                    }
+                // Append new entry to 'out'
+                {
+                    let mut out_lock = out_clone.lock().unwrap();
+                    let new_entry = format!("{},{},{}", height, p2pk_tx_count, p2pk_satoshis);
+                    out_lock.push(new_entry);
                 }
-            }
 
-            info!(
-                "P2PK Transactions: {}, P2PK Satoshis: {}",
-                p2pk_tx_count, p2pk_satoshis
-            );
+                // Update the CSV file atomically
+                {
+                    let content = {
+                        let out_lock = out_clone.lock().unwrap();
+                        out_lock.join("\n")
+                    };
+                    let temp_path = "out.csv.tmp";
+                    File::create(temp_path)?.write_all(content.as_bytes())?;
+                    rename(temp_path, "out.csv")?;
+                }
 
-            // Append new entry to 'out'
-            {
-                let mut out_lock = out_clone.lock().unwrap();
-                let new_entry = format!("{},{},{}", height, p2pk_tx_count, p2pk_satoshis);
-                out_lock.push(new_entry);
-            }
+                // Signal that we've processed this block
+                block_processed_tx.send(height as u32)?;
 
-            // Update the CSV file atomically
-            {
-                let content = {
-                    let out_lock = out_clone.lock().unwrap();
-                    out_lock.join("\n")
+                // Persist the block data to the SQLite database
+                let block_data = BlockAggregateOutput {
+                    date: Utc.timestamp_opt(block.header.time as i64, 0)
+                        .unwrap()
+                        .format("%Y-%m-%d %H:%M:%S UTC")
+                        .to_string(),
+                    block_height: height as usize,
+                    block_hash_big_endian: block.block_hash().to_string(),
+                    total_p2pk_addresses: p2pk_tx_count as u32,
+                    total_p2pk_value: p2pk_satoshis as f64,
                 };
-                let temp_path = "out.csv.tmp";
-                File::create(temp_path)?.write_all(content.as_bytes())?;
-                rename(temp_path, "out.csv")?;
+
+                sqlite_persistence.persist_block_aggregates(&block_data).await?;
             }
 
-            // Signal that we've processed this block
-            block_processed_tx.send(height as u32)?;
-        }
-
-        Ok(())
+            Ok(())
+        })
     });
 
     info!(

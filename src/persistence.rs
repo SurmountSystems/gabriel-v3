@@ -1,6 +1,6 @@
 use std::env;
 
-use log::debug;
+use log::info;
 use sqlx::migrate::MigrateDatabase;
 use sqlx::{Pool, Row, Sqlite};
 
@@ -31,8 +31,8 @@ impl SQLitePersistence {
             .connect(&format!("sqlite:{}", sqlite_absolute_path))
             .await?;
 
-        debug!(
-            "SQLite database pool created at {} with size {}",
+        info!(
+            "SQLite database pool created at {} with max connection pool size {}",
             sqlite_absolute_path, pool_max_size
         );
 
@@ -135,11 +135,15 @@ impl SQLitePersistence {
         }
     }
 
+    /* Returns the last block height in the database.
+     * If the database is empty, returns None.
+     */
     pub async fn get_last_block_height(&self) -> anyhow::Result<Option<i64>> {
-        let result = sqlx::query("SELECT MAX(block_height) FROM p2pk_utxo_block_aggregates")
+        let result = sqlx::query("SELECT MAX(block_height) as max_height FROM p2pk_utxo_block_aggregates")
             .fetch_optional(&self.pool)
             .await?;
 
-        Ok(result.map(|row| row.get(0)))
+        // For an empty table, result.get(0) will return None because MAX() returns NULL
+        Ok(result.and_then(|row| row.get::<Option<i64>, _>("max_height")))
     }
 }
