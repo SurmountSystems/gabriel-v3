@@ -9,6 +9,7 @@ gabriel-v3
       - [2.1.2.2. SQLite client](#2122-sqlite-client)
   - [2.2. Build Gabriel](#22-build-gabriel)
 - [3. Inspect P2PK Analysis data](#3-inspect-p2pk-analysis-data)
+- [4. Export P2PK UTXO Analysis data to CSV](#4-export-p2pk-utxo-analysis-data-to-csv)
 
 
 ## 1. Introduction
@@ -88,4 +89,12 @@ sqlite> delete from p2pk_utxo_block_aggregates;
 
 # quit sqlite command line:  press  <ctrl> d
 
+```
+
+## 4. Export P2PK UTXO Analysis data to CSV
+
+```
+$ sqlite3 $SQLITE_ABSOLUTE_PATH ".headers on" ".mode csv" ".once \
+        /tmp/p2pk_utxo_block_aggregates.csv" \
+        "SELECT * FROM p2pk_utxo_block_aggregates;"
 ```
