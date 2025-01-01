@@ -1,8 +1,6 @@
 use std::{
-    fs::{rename, File, OpenOptions},
-    io::{Read, Seek, Write},
     net,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc},
     thread,
 };
 
@@ -23,8 +21,6 @@ mod util;
 
 /// The network reactor we're going to use.
 type Reactor = nakamoto::net::poll::Reactor<net::TcpStream>;
-
-const HEADER: &str = "Height,Total P2PK addresses,Total P2PK satoshis";
 
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -59,6 +55,82 @@ where
     rx
 }
 
+/// Processes blocks and persists data to SQLite database
+async fn process_blocks(
+    block_handle: impl Handle,
+    db: Arc<sled::Db>,
+    sqlite_persistence: persistence::SQLitePersistence,
+    block_processed_tx: crossbeam_channel::Sender<u32>,
+    initial_p2pk_addresses: i32,
+    initial_p2pk_coins: i64,
+) -> Result<(), AppError> {
+    let mut p2pk_tx_count: i32 = initial_p2pk_addresses;
+    let mut p2pk_satoshis: i64 = initial_p2pk_coins;
+
+    info!("Starting block processing...");
+
+    for (block, height) in block_handle.blocks() {
+        info!(
+            "Processing Block {}: {} transactions",
+            height,
+            block.txdata.len()
+        );
+
+        // Scan the block for P2PK transactions
+        for tx in block.txdata.iter() {
+            let txid = tx.txid();
+
+            for (i, output) in tx.output.iter().enumerate() {
+                if output.script_pubkey.is_p2pk() {
+                    db.insert(
+                        format!("{}:{}", txid, i).as_bytes(),
+                        output.value.to_le_bytes().to_vec(),
+                    )?;
+
+                    p2pk_tx_count += 1;
+                    p2pk_satoshis += output.value as i64;
+                }
+            }
+
+            for input in tx.input.iter() {
+                let input_txid = input.previous_output.txid;
+                let input_vout = input.previous_output.vout;
+                let input_key = format!("{}:{}", input_txid, input_vout);
+                if let Some(value_bytes) = db.get(input_key.as_bytes())? {
+                    let value = i64::from_le_bytes(value_bytes.as_ref().try_into().unwrap());
+                    p2pk_tx_count -= 1;
+                    p2pk_satoshis -= value;
+                    db.remove(input_key.as_bytes())?;
+                }
+            }
+        }
+
+        info!(
+            "P2PK Transactions: {}, P2PK Satoshis: {}",
+            p2pk_tx_count, p2pk_satoshis
+        );
+
+        // Persist the block data to the SQLite database
+        let block_data = BlockAggregateOutput {
+            date: Utc.timestamp_opt(block.header.time as i64, 0)
+                .unwrap()
+                .format("%Y-%m-%d %H:%M:%S UTC")
+                .to_string(),
+            block_height: height as usize,
+            block_hash_big_endian: block.block_hash().to_string(),
+            total_p2pk_addresses: p2pk_tx_count as u32,
+            total_p2pk_value: p2pk_satoshis as f64,
+        };
+
+        sqlite_persistence.persist_block_aggregates(&block_data).await?;
+
+        // Signal that we've processed this block
+        block_processed_tx.send(height as u32)?;
+    }
+
+    Ok(())
+}
+
 /// Run the light-client.
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
@@ -75,37 +147,6 @@ async fn main() -> Result<(), AppError> {
 
     info!("Initializing sqlite to store block data");
     let sqlite_persistence = persistence::SQLitePersistence::new(1).await.map_err(|e| AppError::SqliteError(e))?;
-
-    info!("Initializing output vector...");
-    let out = Arc::new(Mutex::new(Vec::<String>::new()));
-
-    info!("Opening or creating 'out.csv'...");
-    // Open the file if it exists, otherwise create it
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open("out.csv")?;
-
-    // Read the file content into a string
-    let mut content = String::new();
-    {
-        let mut file_guard = file.try_clone()?;
-        file_guard.read_to_string(&mut content)?;
-    }
-
-    {
-        let mut out_lock = out.lock().unwrap();
-        // Check if the file is empty or doesn't start with the header
-        if content.is_empty() || !content.starts_with(HEADER) {
-            // If empty or no header, add the header to the beginning of out
-            out_lock.push(HEADER.to_owned());
-        }
-
-        // Split the content into lines and collect into the out vector
-        out_lock.extend(content.lines().map(|line| line.to_string()));
-    }
 
     // Get the last block height from the sqlite database
     let resume_height = {
@@ -168,97 +209,20 @@ async fn main() -> Result<(), AppError> {
     info!("Initial tip height: {}", tip_height);
 
     info!("Spawning block processing thread...");
-    // Clone the necessary Arcs for the processing thread
-    let out_clone = Arc::clone(&out);
     let db_clone = Arc::clone(&db);
-
-    // Spawn the block processing thread
     let block_processor_rx = spawn_thread(move || {
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
-            let mut p2pk_tx_count: i32 = p2pk_addresses;
-            let mut p2pk_satoshis: i64 = p2pk_coins;
-
-            info!("Starting block processing thread...");
-
-            for (block, height) in block_handle.blocks() {
-                info!(
-                    "Processing Block {}: {} transactions",
-                    height,
-                    block.txdata.len()
-                );
-
-                // Scan the block for P2PK transactions
-                for tx in block.txdata.iter() {
-                    let txid = tx.txid();
-
-                    for (i, output) in tx.output.iter().enumerate() {
-                        if output.script_pubkey.is_p2pk() {
-                            db_clone.insert(
-                                format!("{}:{}", txid, i).as_bytes(),
-                                output.value.to_le_bytes().to_vec(),
-                            )?;
-
-                            p2pk_tx_count += 1;
-                            p2pk_satoshis += output.value as i64;
-                        }
-                    }
-
-                    for input in tx.input.iter() {
-                        let input_txid = input.previous_output.txid;
-                        let input_vout = input.previous_output.vout;
-                        let input_key = format!("{}:{}", input_txid, input_vout);
-                        if let Some(value_bytes) = db_clone.get(input_key.as_bytes())? {
-                            let value = i64::from_le_bytes(value_bytes.as_ref().try_into().unwrap());
-                            p2pk_tx_count -= 1;
-                            p2pk_satoshis -= value;
-                            db_clone.remove(input_key.as_bytes())?;
-                        }
-                    }
-                }
-
-                info!(
-                    "P2PK Transactions: {}, P2PK Satoshis: {}",
-                    p2pk_tx_count, p2pk_satoshis
-                );
-
-                // Append new entry to 'out'
-                {
-                    let mut out_lock = out_clone.lock().unwrap();
-                    let new_entry = format!("{},{},{}", height, p2pk_tx_count, p2pk_satoshis);
-                    out_lock.push(new_entry);
-                }
-
-                // Update the CSV file atomically
-                {
-                    let content = {
-                        let out_lock = out_clone.lock().unwrap();
-                        out_lock.join("\n")
-                    };
-                    let temp_path = "out.csv.tmp";
-                    File::create(temp_path)?.write_all(content.as_bytes())?;
-                    rename(temp_path, "out.csv")?;
-                }
-
-                // Signal that we've processed this block
-                block_processed_tx.send(height as u32)?;
-
-                // Persist the block data to the SQLite database
-                let block_data = BlockAggregateOutput {
-                    date: Utc.timestamp_opt(block.header.time as i64, 0)
-                        .unwrap()
-                        .format("%Y-%m-%d %H:%M:%S UTC")
-                        .to_string(),
-                    block_height: height as usize,
-                    block_hash_big_endian: block.block_hash().to_string(),
-                    total_p2pk_addresses: p2pk_tx_count as u32,
-                    total_p2pk_value: p2pk_satoshis as f64,
-                };
-
-                sqlite_persistence.persist_block_aggregates(&block_data).await?;
-            }
-
-            Ok(())
+            process_blocks(
+                block_handle,
+                db_clone,
+                sqlite_persistence,
+                block_processed_tx,
+                p2pk_addresses,
+                p2pk_coins,
+            )
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         })
     });
 
@@ -284,7 +248,7 @@ async fn main() -> Result<(), AppError> {
         // Request the block.
         header_handle.get_block(&block_hash)?;
 
-        // Wait for the block thread to process this block.
+        // Wait for the block thread to process a block.
         match block_processed_rx.recv() {
             Ok(height) => {
                 assert_eq!(
@@ -309,18 +273,6 @@ async fn main() -> Result<(), AppError> {
     }
 
     info!("All blocks processed up to height {}.", tip_height);
-
-    info!("Updating 'out.csv' with final data...");
-    // When writing back to the file, ensure we start from the beginning
-    let mut file = file.try_clone()?;
-    {
-        let out_lock = out.lock().unwrap();
-        file.seek(std::io::SeekFrom::Start(0))?;
-        file.set_len(0)?; // Truncate the file
-        for line in &*out_lock {
-            writeln!(file, "{}", line)?;
-        }
-    }
 
     info!("Shutting down Nakamoto client...");
     // Ask the client to terminate.
