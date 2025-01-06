@@ -1,6 +1,6 @@
-use crate::{util::BlockAggregateOutput, persistence::SQLitePersistence};
+use crate::{util::BlockAggregateOutput, persistence::SQLitePersistence, util::BtcAddressType};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, State, Query},
     response::{sse::Event, Sse},
     Json,
 };
@@ -8,11 +8,12 @@ use futures::{stream, Stream};
 use serde::Serialize;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::sync::broadcast;
+use std::collections::HashMap;
 
 #[derive(Serialize)]
 pub struct AggregateResponse {
-    total_p2pk_utxo_count: i64,
-    total_p2pk_utxo_value: f64,
+    total_utxos: i64,
+    total_sats: f64,
 }
 
 #[derive(Serialize)]
@@ -20,8 +21,8 @@ pub struct BlockResponse {
     date: String,
     block_height: usize,
     block_hash: String,
-    total_p2pk_addresses: u32,
-    total_p2pk_value: f64,
+    total_utxos: u32,
+    total_sats: f64,
 }
 
 pub struct AppState {
@@ -32,7 +33,7 @@ pub struct AppState {
 pub(crate) async fn stream_blocks(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let mut rx = state.sender.subscribe();
+    let rx = state.sender.subscribe();
 
     let stream = stream::unfold(rx, move |mut rx| async move {
         let msg = rx.recv().await.ok()?;
@@ -47,27 +48,38 @@ pub(crate) async fn stream_blocks(
     )
 }
 
-pub async fn get_aggregates(State(state): State<Arc<AppState>>) -> Json<AggregateResponse> {
-    let (count, value) = state.db.get_total_aggregates().await.unwrap();
+pub async fn get_latest_block_aggregates(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<Vec<BlockAggregateOutput>> {
+    // Parse address_type from query params, default to None (which will be P2PK)
+    let address_type = params.get("address_type")
+        .and_then(|s| s.parse::<BtcAddressType>().ok());
+    
+    // Parse num_blocks from query params, default to None (which will be 10)
+    let num_blocks = params.get("num_blocks")
+        .and_then(|s| s.parse::<i64>().ok());
 
-    Json(AggregateResponse {
-        total_p2pk_utxo_count: count,
-        total_p2pk_utxo_value: value,
-    })
+    let aggregates = state.db
+        .get_latest_block_aggregates(address_type, num_blocks)
+        .await
+        .unwrap_or_default();
+
+    Json(aggregates)
 }
 
 pub async fn get_block_by_hash(
     State(state): State<Arc<AppState>>,
     Path(hash): Path<String>,
 ) -> Json<Option<BlockResponse>> {
-    let block = state.db.get_block_by_hash(&hash).await.unwrap();
+    let block = state.db.get_block_by_hash(BtcAddressType::P2PK.as_str().to_string(), &hash).await.unwrap();
 
     Json(block.map(|b| BlockResponse {
         date: b.date,
         block_height: b.block_height,
         block_hash: b.block_hash_big_endian,
-        total_p2pk_addresses: b.total_p2pk_addresses as u32,
-        total_p2pk_value: b.total_p2pk_value,
+        total_utxos: b.total_utxos as u32,
+        total_sats: b.total_sats,
     }))
 }
 
@@ -75,13 +87,13 @@ pub async fn get_block_by_height(
     State(state): State<Arc<AppState>>,
     Path(height): Path<i64>,
 ) -> Json<Option<BlockResponse>> {
-    let block = state.db.get_block_by_height(height).await.unwrap();
+    let block = state.db.get_block_by_height(BtcAddressType::P2PK.as_str().to_string(), height).await.unwrap();
 
     Json(block.map(|b| BlockResponse {
         date: b.date,
         block_height: b.block_height,
         block_hash: b.block_hash_big_endian,
-        total_p2pk_addresses: b.total_p2pk_addresses as u32,
-        total_p2pk_value: b.total_p2pk_value,
+        total_utxos: b.total_utxos as u32,
+        total_sats: b.total_sats,
     }))
 }

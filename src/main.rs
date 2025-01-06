@@ -13,15 +13,19 @@ use nakamoto::client::{
     Client, Config,
 };
 use thiserror::Error;
-use log::{info, debug};
+use log::{info, debug, error};
 
 use tokio::sync::broadcast;
-use axum::routing::get;
+use tokio::signal;
+use axum::{
+    http::{HeaderValue, Method, header::HeaderName},
+    routing::{get, Router} 
+};
 use std::net::SocketAddr;
 use tower_http::services::ServeDir;
 
-use crate::util::BlockAggregateOutput;
 use api::AppState;
+use crate::util::{BlockAggregateOutput, BtcAddressType};
 
 mod persistence;
 mod util;
@@ -126,11 +130,11 @@ async fn process_blocks(
                 .to_string(),
             block_height: height as usize,
             block_hash_big_endian: block.block_hash().to_string(),
-            total_p2pk_addresses: p2pk_tx_count as u32,
-            total_p2pk_value: p2pk_satoshis as f64,
+            total_utxos: p2pk_tx_count as u32,
+            total_sats: p2pk_satoshis as f64,
         };
 
-        sqlite_persistence.persist_block_aggregates(&block_data).await?;
+        sqlite_persistence.persist_block_aggregates(BtcAddressType::P2PK.as_str().to_string(), &block_data).await?;
 
         // Signal that we've processed this block
         block_processed_tx.send(height as u32)?;
@@ -148,43 +152,107 @@ async fn run_apis_and_web_app(sender: broadcast::Sender<BlockAggregateOutput>) -
         sender: sender,
     });
 
-    // Define routes for REST API, SSE stream, and React frontend
-    let web_app_router = axum::Router::new()
-        .route("/api/aggregates", get(api::get_aggregates))
-        .route("/api/block/hash/:hash", get(api::get_block_by_hash))
-        .route("/api/block/height/:height", get(api::get_block_by_height))
-        .route("/api/blocks/stream", get(api::stream_blocks))
-        .nest_service("/", ServeDir::new("web/build"))
-        .with_state(app_state);
-
     // Determine socket that web_app will bind top
     let web_addr: SocketAddr = env::var("WEB_SOCKET_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
         .parse()
         .expect("Failed to parse API_ADDR");
-    println!("REST API listening on {}", web_addr);
+    info!("REST API listening on {}", web_addr);
+
+    // Define common API routes
+    let api_routes = Router::new()
+        .route("/api/blocks/latest", get(api::get_latest_block_aggregates))
+        .route("/api/block/hash/:hash", get(api::get_block_by_hash))
+        .route("/api/block/height/:height", get(api::get_block_by_height))
+        .route("/api/blocks/stream", get(api::stream_blocks));
+
+    let web_app_router = if cfg!(debug_assertions) {
+        // In debug mode, proxy requests to React dev server
+        info!("debug_assertions = true; enabling CORS for localhost development");
+        api_routes
+            .nest_service("/", tower_http::services::ServeDir::new("web/public"))
+            .layer(
+                tower_http::cors::CorsLayer::new()
+                    .allow_origin("*".parse::<HeaderValue>().unwrap())
+                    .allow_methods(tower_http::cors::Any)
+                    .allow_headers(tower_http::cors::Any)
+            )
+    } else {
+        // In release mode, serve the built files
+        api_routes
+            .nest_service("/", ServeDir::new("web/build"))
+    };
 
     // Spawn the web app server in the background
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(web_addr).await.unwrap();
-        axum::serve(listener, web_app_router.into_make_service())
-            .await
-            .unwrap();
+        axum::serve(
+            listener,
+            web_app_router.with_state(app_state).into_make_service()
+        )
+        .await
+        .unwrap();
     });
 
     Ok(())
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    println!("shutdown signal received, starting graceful shutdown");
+}
+
 /// Run the light-client.
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-
     // Initialize env_logger with default level of info
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .filter_module("p2p", log::LevelFilter::Warn)
         .init();
 
+    // Create a broadcast channel for SSE events and start the API server
+    let (tx, _rx) = broadcast::channel(100);
+    run_apis_and_web_app(tx.clone()).await?;
+
+    // Check if we should run the Nakamoto analysis (defaults to true)
+    let run_analysis = env::var("RUN_NAKAMOTO_ANALYSIS")
+        .map(|val| val.to_lowercase() != "false")
+        .unwrap_or(true);
+
+    if run_analysis {
+        run_nakamoto_analysis().await?;
+    } else {
+        // Wait for shutdown signal instead of pending forever
+        shutdown_signal().await;
+    }
+
+    Ok(())
+}
+
+async fn run_nakamoto_analysis() -> Result<(), AppError> {
+    
     info!("Initializing sled key-value store to track P2PK transactions...");
     let db = sled::open("db")?;
     let db = Arc::new(db); // Wrap in Arc for thread-safe sharing
@@ -194,7 +262,7 @@ async fn main() -> Result<(), AppError> {
 
     // Get the last block height from the sqlite database
     let resume_height = {
-        let last_height = sqlite_persistence.get_last_block_height().await?;
+        let last_height = sqlite_persistence.get_last_block_height(BtcAddressType::P2PK.as_str().to_string()).await?;
         debug!("Last height from database: {:?}", last_height);
         match last_height {
             Some(height) => height.checked_add(1).unwrap_or(1) as u64,
@@ -202,14 +270,14 @@ async fn main() -> Result<(), AppError> {
         }
     };
 
-    // Get the P2PK addresses and coins from the last processed block
+    // Get the total utxos and sats from the last processed block
     let (p2pk_addresses, p2pk_coins) = {
         if resume_height > 0 {
-            let last_block = sqlite_persistence.get_block_by_height((resume_height - 1) as i64).await?;
+            let last_block = sqlite_persistence.get_block_by_height(BtcAddressType::P2PK.as_str().to_string(), (resume_height - 1) as i64).await?;
             match last_block {
                 Some(block) => (
-                    block.total_p2pk_addresses as i32,
-                    block.total_p2pk_value as i64
+                    block.total_utxos as i32,
+                    block.total_sats as i64
                 ),
                 None => (0, 0)
             }
@@ -222,10 +290,6 @@ async fn main() -> Result<(), AppError> {
         "Resuming from height {}, P2PK addresses: {}, P2PK satoshis: {}",
         resume_height, p2pk_addresses, p2pk_coins
     );
-
-    // Create a broadcast channel for SSE events and start the API server
-    let (tx, _rx) = broadcast::channel(100);
-    run_apis_and_web_app(tx.clone()).await?;
 
     info!("Configuring Nakamoto client...");
     let cfg = Config::new(Network::Mainnet);
@@ -286,7 +350,7 @@ async fn main() -> Result<(), AppError> {
         let block_hash = match block_header {
             Some(h) => h.block_hash(),
             None => {
-                eprintln!("No block found at height {}", i);
+                error!("No block found at height {}", i);
                 continue;
             }
         };
@@ -307,7 +371,7 @@ async fn main() -> Result<(), AppError> {
                 info!("Successfully processed block {}", height);
             }
             Err(e) => {
-                eprintln!("Error waiting for block processing: {}", e);
+                error!("Error waiting for block processing: {}", e);
                 break;
             }
         }
@@ -332,7 +396,7 @@ async fn main() -> Result<(), AppError> {
 
     // Check client thread result
     if let Ok(Err(e)) = client_result {
-        eprintln!("Client encountered an error: {}", e);
+        error!("Client encountered an error: {}", e);
         return Err(AppError::Other(e));
     } else if let Ok(Ok(_)) = client_result {
         info!("Client thread terminated gracefully.");
@@ -340,7 +404,7 @@ async fn main() -> Result<(), AppError> {
             "Client thread terminated gracefully.".to_owned(),
         ));
     } else if let Err(e) = client_result {
-        eprintln!("Failed to receive from client thread: {}", e);
+        error!("Failed to receive from client thread: {}", e);
         return Err(AppError::CustomError(format!(
             "Failed to receive from client thread: {}",
             e
@@ -349,7 +413,7 @@ async fn main() -> Result<(), AppError> {
 
     // Check block processor thread result
     if let Ok(Err(e)) = block_processor_result {
-        eprintln!("Block processor encountered an error: {}", e);
+        error!("Block processor encountered an error: {}", e);
         return Err(AppError::Other(e));
     } else if let Ok(Ok(_)) = block_processor_result {
         info!("Block processor thread terminated gracefully.");
@@ -357,7 +421,7 @@ async fn main() -> Result<(), AppError> {
             "Block processor thread terminated gracefully.".to_owned(),
         ));
     } else if let Err(e) = block_processor_result {
-        eprintln!("Failed to receive from block processor thread: {}", e);
+        error!("Failed to receive from block processor thread: {}", e);
         return Err(AppError::CustomError(format!(
             "Failed to receive from block processor thread: {}",
             e

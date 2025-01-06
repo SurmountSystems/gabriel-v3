@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
+import { API_ENDPOINTS } from '../config/api';
 
 interface BlockAggregate {
   date: string;
@@ -13,7 +14,7 @@ function BlockStream() {
   const [blocks, setBlocks] = useState<BlockAggregate[]>([]);
 
   useEffect(() => {
-    const eventSource = new EventSource('/api/blocks/stream');
+    const eventSource = new EventSource(API_ENDPOINTS.blockStream);
 
     eventSource.onmessage = (event) => {
       const newBlock = JSON.parse(event.data) as BlockAggregate;
@@ -40,14 +41,14 @@ function BlockStream() {
           type="monotone"
           dataKey="total_p2pk_addresses"
           stroke="#8884d8"
-          name="Total P2PK Addresses"
+          name="Total P2PK UTXOs"
         />
         <Line
           yAxisId="right"
           type="monotone"
           dataKey="total_p2pk_value"
           stroke="#82ca9d"
-          name="Total P2PK Value (BTC)"
+          name="Total P2PK Value (sats)"
         />
       </LineChart>
     </div>
