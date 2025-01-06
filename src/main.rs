@@ -1,4 +1,5 @@
 use std::{
+    env,
     net,
     sync::{mpsc, Arc},
     thread,
@@ -14,10 +15,17 @@ use nakamoto::client::{
 use thiserror::Error;
 use log::{info, debug};
 
+use tokio::sync::broadcast;
+use axum::routing::get;
+use std::net::SocketAddr;
+use tower_http::services::ServeDir;
+
 use crate::util::BlockAggregateOutput;
+use api::AppState;
 
 mod persistence;
 mod util;
+mod api;
 
 /// The network reactor we're going to use.
 type Reactor = nakamoto::net::poll::Reactor<net::TcpStream>;
@@ -131,6 +139,42 @@ async fn process_blocks(
     Ok(())
 }
 
+async fn run_apis_and_web_app(sender: broadcast::Sender<BlockAggregateOutput>) -> anyhow::Result<()> {
+    // Create a SQLite persistence instance with a connection pool
+    let sqlite_persistence = persistence::SQLitePersistence::new(5).await?;
+
+    let app_state = Arc::new(AppState {
+        db: sqlite_persistence,
+        sender: sender,
+    });
+
+    // Define routes for REST API, SSE stream, and React frontend
+    let web_app_router = axum::Router::new()
+        .route("/api/aggregates", get(api::get_aggregates))
+        .route("/api/block/hash/:hash", get(api::get_block_by_hash))
+        .route("/api/block/height/:height", get(api::get_block_by_height))
+        .route("/api/blocks/stream", get(api::stream_blocks))
+        .nest_service("/", ServeDir::new("web/build"))
+        .with_state(app_state);
+
+    // Determine socket that web_app will bind top
+    let web_addr: SocketAddr = env::var("WEB_SOCKET_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
+        .parse()
+        .expect("Failed to parse API_ADDR");
+    println!("REST API listening on {}", web_addr);
+
+    // Spawn the web app server in the background
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(web_addr).await.unwrap();
+        axum::serve(listener, web_app_router.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    Ok(())
+}
+
 /// Run the light-client.
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
@@ -178,6 +222,10 @@ async fn main() -> Result<(), AppError> {
         "Resuming from height {}, P2PK addresses: {}, P2PK satoshis: {}",
         resume_height, p2pk_addresses, p2pk_coins
     );
+
+    // Create a broadcast channel for SSE events and start the API server
+    let (tx, _rx) = broadcast::channel(100);
+    run_apis_and_web_app(tx.clone()).await?;
 
     info!("Configuring Nakamoto client...");
     let cfg = Config::new(Network::Mainnet);
