@@ -1,0 +1,116 @@
+body {
+  background-color: #0e2436;
+  color: #ffffff;
+  font-family: Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+.App {
+  text-align: center;
+}
+
+.App-header {
+  background-color: #0e2436;
+  padding: 20px;
+  text-align: center;
+  min-height: 20vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.App-logo {
+  height: 256px;
+}
+
+/* Main content area */
+main {
+  padding: 20px;
+  text-align: center;
+}
+
+/* Style for sections */
+.section {
+  background-color: #1b3b57;
+  padding: 20px;
+  margin: 20px 0 20px 48px;
+  border-radius: 10px;
+  max-width: 800px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Headings within sections */
+.section h3 {
+  color: #ffffff;
+  margin-bottom: 15px;
+  font-size: 1.5em;
+  display: inline-block;
+}
+
+/* Paragraphs within sections */
+.section p {
+  line-height: 1.6;
+  margin-bottom: 15px;
+  text-align: left;
+}
+
+.section .center {
+  text-align: center;
+  font-size: 1.1em;
+}
+
+/* Links */
+a {
+  color: #1e90ff;
+  text-decoration: none;
+  font-weight: bold;
+  transition: color 0.3s ease;
+}
+
+a:hover {
+  color: #ff4500;
+  text-decoration: underline;
+}
+
+/* Code blocks */
+.code {
+  font-size: 0.8em;
+  word-break: break-all;
+  cursor: pointer;
+  padding: 10px;
+  border-radius: 4px;
+}
+
+/* Remove the spinning animation */
+@media (prefers-reduced-motion: no-preference) {
+  .App-logo {
+    animation: none;
+  }
+}
+
+/* Graph labels */
+.recharts-text {
+  fill: #ffffff !important;  /* Makes all chart text white */
+}
+
+.recharts-legend-item-text {
+  color: #ffffff !important;  /* Makes legend text white */
+}
+
+/* Target all axis labels including right y-axis */
+.recharts-cartesian-axis-label {
+  fill: #ffffff !important;
+}
+
+/* Specifically target right y-axis */
+.recharts-yAxis.yAxis-right .recharts-label,
+.recharts-yAxis.yAxis-right text {
+  fill: #ffffff !important;
+}
+
+/* Make sure all tick values are white too */
+.recharts-cartesian-axis-tick-value {
+  fill: #ffffff !important;
+}

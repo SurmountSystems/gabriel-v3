@@ -4,7 +4,23 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nakamoto = "0.4.0"
+anyhow = "1.0.95"
+axum = "0.7"
+chrono = "0.4.39"
 crossbeam-channel = "0.5"
+env_logger = "0.11.6"
+futures = "0.3"
+log = "0.4.22"
+nakamoto = "0.4.0"
+
+# features= bundled
+#   This causes rusqlite to compile its own private libsqlite3 and link it with your Rust code, instead of using /usr/lib/x86_64-linux-gnu/libsqlite3.so
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+
+serde = { version = "1.0.201", features = ["derive"] }
+serde_json = "1.0"
 sled = "0.34.7"
+sqlx = { version = "0.8.2", features = ["sqlite", "runtime-tokio"] }
 thiserror = "2.0"
+tokio = { version = "1.40.0", features = ["full"] }
+tower-http = { version = "0.5.2", features = ["full"] }
