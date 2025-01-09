@@ -30,7 +30,7 @@ function BlocksGraph() {
 
   return (
     <div className="relative w-full">
-      <h2 className="text-xl font-bold mb-4">P2PK Analysis Over Time</h2>
+      <h2 className="text-xl font-bold mb-4">P2PK UTXO Aggregates Over Time</h2>
       <LineChart width={800} height={400} data={data} margin={{ top: 20, right: 100, bottom: 90, left: 50 }}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis 
@@ -50,13 +50,16 @@ function BlocksGraph() {
         />
         <YAxis 
           yAxisId="left"
-          label={{ 
-            value: "Number of UTXOs", 
-            angle: -90, 
-            position: "insideLeft",
-            offset: -35
-          }}
         />
+        <text
+          x={90}
+          y={230}
+          textAnchor="middle"
+          transform="rotate(-90, 20, 200)"
+          style={{ fontSize: '15px', fill: '#8884d8' }}
+        >
+          Number of UTXOs
+        </text>
         <YAxis 
           yAxisId="right" 
           orientation="right"
@@ -102,11 +105,11 @@ function BlocksGraph() {
           name="Total Value (BTC)"
         />
         <text
-          x={780}
+          x={700}
           y={200}
           textAnchor="middle"
           transform="rotate(90, 780, 200)"
-          style={{ fontSize: '12px' }}
+          style={{ fontSize: '15px', fill: '#2e7d32' }}
         >
           Total Value (BTC)
         </text>

@@ -44,9 +44,8 @@ impl SQLitePersistence {
     }
 
     pub async fn new(pool_max_size: u32) -> anyhow::Result<Self> {
-        let sqlite_absolute_path = env::var("SQLITE_ABSOLUTE_PATH").map_err(|e| {
-            anyhow::anyhow!("Missing SQLITE_ABSOLUTE_PATH environment variable: {}", e)
-        })?;
+        let sqlite_absolute_path = env::var("SQLITE_ABSOLUTE_PATH")
+            .unwrap_or_else(|_| String::from("/tmp/gabriel/gabriel_p2pk.db"));
 
         // Create parent directories if they don't exist
         if let Some(parent) = std::path::Path::new(&sqlite_absolute_path).parent() {
@@ -63,7 +62,7 @@ impl SQLitePersistence {
             .await?;
 
         info!(
-            "SQLite database pool created at {} with max connection pool size {}",
+            "SQLite database pool created (or reused) at {} with max connection pool size {}",
             sqlite_absolute_path, pool_max_size
         );
 
