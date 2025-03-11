@@ -35,9 +35,9 @@ function P2PKBlocksGraph() {
   if (error) return <div>Error loading data</div>;
 
   return (
-    <div className="relative w-full">
+    <div id="chart-container" className="relative w-full">
       <h2 className="text-xl font-bold mb-4">P2PK UTXO Aggregates Over Time</h2>
-      <LineChart width={800} height={400} data={data} margin={{ top: 20, right: 100, bottom: 90, left: 50 }}>
+      <LineChart width={800} height={400} data={data} margin={{ top: 15, right: 100, bottom: 90, left: 50 }}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis 
           dataKey="date" 
@@ -51,7 +51,7 @@ function P2PKBlocksGraph() {
           label={{ 
             value: "Block Date", 
             position: "bottom", 
-            offset: 70
+            offset: 65
           }}
         />
         <YAxis 
@@ -75,24 +75,51 @@ function P2PKBlocksGraph() {
           })}
         />
         <Tooltip 
-          formatter={(value: number, name: string) => [
-            name === "Total Value (BTC)" ? 
-              (value / 100000000).toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2
-              }) : value,
-            name
-          ]}
-          labelFormatter={(timeStr) => {
-            const date = new Date(timeStr);
-            return date.toISOString().split('T')[0];
+          formatter={(value: number, name: string, props: any) => {
+            const formattedValue = name === "Total Value (BTC)" 
+              ? (value / 100000000).toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2
+                })
+              : value;
+            return [formattedValue, name];
+          }}
+          labelFormatter={(label, payload) => {
+            if (payload && payload.length > 0) {
+              const { block_height, date } = payload[0].payload;
+              const formattedDate = new Date(date).toISOString().split('T')[0];
+              return `Block Height: ${block_height}, Date: ${formattedDate}`;
+            }
+            return '';
+          }}
+          content={({ payload, label }) => {
+            if (payload && payload.length) {
+              const { block_height, date } = payload[0].payload;
+              const formattedDate = new Date(date).toISOString().split('T')[0];
+              return (
+                <div className="custom-tooltip" style={{
+                  background: 'linear-gradient(white, #fafafa)',
+                  padding: '10px',
+                  borderRadius: '5px',
+                  boxShadow: '0 0 5px rgba(0, 0, 0, 0.1)',
+                  color: '#333'
+                }}>
+                  <p>{`Block Height: ${block_height}`}</p>
+                  <p>{`Date: ${formattedDate}`}</p>
+                  {payload.map((entry, index) => (
+                    <p key={`item-${index}`}>{`${entry.name}: ${entry.value}`}</p>
+                  ))}
+                </div>
+              );
+            }
+            return null;
           }}
         />
         <Legend 
           verticalAlign="bottom" 
           height={36}
           wrapperStyle={{
-            bottom: "15px",
+            bottom: "25px",
             position: "relative"
           }}
         />
@@ -112,7 +139,7 @@ function P2PKBlocksGraph() {
         />
         <text
           x={700}
-          y={200}
+          y={195}
           textAnchor="middle"
           transform="rotate(90, 780, 200)"
           style={{ fontSize: '15px', fill: '#2e7d32' }}
