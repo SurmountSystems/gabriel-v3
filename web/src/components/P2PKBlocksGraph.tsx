@@ -17,30 +17,95 @@ interface BlockAggregate {
   total_sats: number;
 }
 
+// Set up an Axios request interceptor
+axios.interceptors.request.use(request => {
+    console.log('Starting Request', {
+        url: request.url,
+        method: request.method,
+        headers: request.headers,
+        data: request.data,
+        params: request.params,
+    });
+    return request;
+});
+
+// Set up an Axios response interceptor
+axios.interceptors.response.use(response => {
+    /*
+    console.log('Response:', {
+        url: response.config.url,
+        status: response.status,
+        data: response.data,
+        headers: response.headers,
+    });
+    */
+    return response;
+}, error => {
+    console.error('Response Error:', {
+        url: error.config?.url,
+        message: error.message,
+        response: error.response ? {
+            status: error.response.status,
+            data: error.response.data,
+            headers: error.response.headers,
+        } : null,
+    });
+    return Promise.reject(error);
+});
+
+async function fetchLatestBlocks(): Promise<BlockAggregate[] | null> {
+    try {
+        const response = await axios.get<BlockAggregate[]>(API_ENDPOINTS.latestBlocks, {
+            timeout: 20000, // Set timeout to 2 seconds
+        });
+        console.log('API call succeeded:', response.data);
+        return response.data; // Return the data
+    } catch (error) {
+        console.error('API call failed:', error);
+
+        // Log additional error details if available
+        if (axios.isAxiosError(error)) {
+            if (error.response) {
+                console.error('Response data:', error.response.data);
+                console.error('Response status:', error.response.status);
+                console.error('Response headers:', error.response.headers);
+            } else if (error.request) {
+                console.error('No response received:', error.request);
+            } else {
+                console.error('Error setting up request:', error.message);
+            }
+        }
+
+        // Block for 10 seconds
+        await new Promise(resolve => setTimeout(resolve, 10000));
+
+        return null; // Return null if the request fails
+    }
+}
+
 function P2PKBlocksGraph() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['aggregates'],
     queryFn: async () => {
-      try {
-        const response = await axios.get<BlockAggregate[]>(API_ENDPOINTS.latestBlocks);
-        return response.data;
-      } catch (error) {
-        console.error('Error fetching data:', error);
-        return [];
-      }
+      console.log('Fetching blocks from API at ', API_ENDPOINTS.latestBlocks);
+      const data = await fetchLatestBlocks();
+      return data;
     },
   });
 
   if (isLoading) return <div>Loading...</div>;
   if (error) return <div>Error loading data</div>;
 
+  // Ensure data is always an array
+  const chartData = data || [];
+
   return (
     <div id="chart-container" className="relative w-full">
       <h2 className="text-xl font-bold mb-4">P2PK UTXO Aggregates Over Time</h2>
-      <LineChart width={800} height={400} data={data} margin={{ top: 15, right: 100, bottom: 90, left: 50 }}>
+      <LineChart width={800} height={400} data={chartData} margin={{ top: 15, right: 100, bottom: 90, left: 50 }}>
         <CartesianGrid strokeDasharray="3 3" />
-        <XAxis 
-          dataKey="date" 
+        <XAxis
+          dataKey="date"
           tickFormatter={(timeStr) => {
             const date = new Date(timeStr);
             return date.toISOString().split('T')[0];
@@ -48,13 +113,13 @@ function P2PKBlocksGraph() {
           angle={-90}
           textAnchor="end"
           height={60}
-          label={{ 
-            value: "Block Date", 
-            position: "bottom", 
+          label={{
+            value: "Block Date",
+            position: "bottom",
             offset: 65
           }}
         />
-        <YAxis 
+        <YAxis
           yAxisId="left"
         />
         <text
@@ -66,21 +131,21 @@ function P2PKBlocksGraph() {
         >
           Number of UTXOs
         </text>
-        <YAxis 
-          yAxisId="right" 
+        <YAxis
+          yAxisId="right"
           orientation="right"
           tickFormatter={(value) => (value / 100000000).toLocaleString(undefined, {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
           })}
         />
-        <Tooltip 
+        <Tooltip
           formatter={(value: number, name: string, props: any) => {
-            const formattedValue = name === "Total Value (BTC)" 
+            const formattedValue = name === "Total Value (BTC)"
               ? (value / 100000000).toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2
-                })
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+              })
               : value;
             return [formattedValue, name];
           }}
@@ -115,8 +180,8 @@ function P2PKBlocksGraph() {
             return null;
           }}
         />
-        <Legend 
-          verticalAlign="bottom" 
+        <Legend
+          verticalAlign="bottom"
           height={36}
           wrapperStyle={{
             bottom: "25px",

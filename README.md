@@ -62,16 +62,37 @@ Set appropriate environment variables as follows:
     - set to a valid value (ie: "info", "debug", "error", etc) to override default logging level
     - NOTE: nakamoto client logging is currently hard-coded to "warn".  This can be overridden by setting the RUST_LOG environment variable to "info,p2p=info" .  ie: `export RUST_LOG=info,p2p=info`
   - RUST_BACKTRACE
+    - optional
     - set to 1 to view Rust backtraces (aka: stacktraces) when an error occurs
   - SQLITE_ABSOLUTE_PATH
     - optional
     - default path is "db" directory in project root dir
     - ie: /path/to/gabriel_p2pk.db
+  - GABRIEL_REACT_APP_BASE_URL
+    - optional
+    - defaults to "http://0.0.0.0:3000"  (which corresponds to running in release mode)
+    - set to "http://0.0.0.0:3001" when running in development mode
   - RUN_NAKAMOTO_ANALYSIS
     - optional
     - set to "true" to run the Nakamoto analysis
     - set to "false" to skip the Nakamoto analysis
     - defaults to "true"
+  - NAKAMOTO_PEER_COUNT
+    - optional
+    - defaults to 4
+    - set to a different number to change number of Bitcoin Core peers Gabriel will connect to
+  - CHART_CAPTURE_FREQUENCY_BLOCKS
+    - optional
+    - defaults to 3
+    - captures charts every N blocks
+  - CHART_CAPTURE_DELAY_SECONDS
+    - optional
+    - defaults to 10
+    - number of seconds to wait after the chart is rendered before capturing the image.  Allows for dynamic data to fully render.
+  - CHART_CAPTURE_IMAGE_DIR_PATH
+    - optional
+    - defaults to "/tmp/gabriel/images"
+    - directory to save captured images
   
 ```bash
 # Build and run Gabriel in debug mode

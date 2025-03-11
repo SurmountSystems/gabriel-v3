@@ -1,14 +1,15 @@
-use crate::{util::BlockAggregateOutput, persistence::SQLitePersistence, util::BtcAddressType};
+use crate::{persistence::SQLitePersistence, util::{self, BlockAggregateOutput, BtcAddressType}};
 use axum::{
-    extract::{Path, State, Query},
-    response::{sse::Event, Sse},
-    Json,
+    extract::{Path, Query, State}, response::{sse::Event, Sse}, Json
 };
 use futures::{stream, Stream};
+
 use serde::Serialize;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::sync::broadcast;
 use std::collections::HashMap;
+use serde_json::json;
+use crate::ApiError;
 
 #[derive(Serialize)]
 pub struct AggregateResponse {
@@ -27,7 +28,7 @@ pub struct BlockResponse {
 
 pub struct AppState {
     pub(crate) db: SQLitePersistence,
-    pub(crate) sender: broadcast::Sender<BlockAggregateOutput>,
+    pub(crate) sender: broadcast::Sender<BlockAggregateOutput>
 }
 
 pub(crate) async fn stream_blocks(
@@ -96,4 +97,16 @@ pub async fn get_block_by_height(
         total_utxos: b.total_utxos as u32,
         total_sats: b.total_sats,
     }))
+}
+
+pub async fn generate_latest_p2pk_chart(
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+
+    util::capture_p2pk_blocks_graph(0).await.unwrap();
+
+    // Create a JSON object with a single element
+    let response = json!({ "Result": "Check logs for status of chart generation" });
+
+    Ok(Json(response))
 }
