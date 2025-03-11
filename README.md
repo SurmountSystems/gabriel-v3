@@ -55,14 +55,18 @@ Once installed, set the SQLITE_ABSOLUTE_PATH environment variable to the path of
   ```
 
 #### 3.0.1. Backend (Rust)
+
 Set appropriate environment variables as follows:
 
   - RUST_LOG
     - set to a valid value (ie: "info", "debug", "error", etc) to override default logging level
     - NOTE: nakamoto client logging is currently hard-coded to "warn".  This can be overridden by setting the RUST_LOG environment variable to "info,p2p=info" .  ie: `export RUST_LOG=info,p2p=info`
   - RUST_BACKTRACE
-    - set to 1 to enable backtrace
-  - SQLITE_ABSOLUTE_PATH=/path/to/gabriel_p2pk.db
+    - set to 1 to view Rust backtraces (aka: stacktraces) when an error occurs
+  - SQLITE_ABSOLUTE_PATH
+    - optional
+    - default path is "db" directory in project root dir
+    - ie: /path/to/gabriel_p2pk.db
   - RUN_NAKAMOTO_ANALYSIS
     - optional
     - set to "true" to run the Nakamoto analysis

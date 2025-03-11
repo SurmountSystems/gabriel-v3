@@ -3,6 +3,12 @@ import axios from 'axios';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from 'recharts';
 import { API_ENDPOINTS } from '../config/api';
 
+/**
+ * Knowing the specific UTXOs is a thing we won't need until much later.
+ * The business value of a chart that graphs unspent P2PK keys and how much bitcoin is locked up in them 
+ * is that we get an "early warning" if a significant number of them are being spent.
+ */
+
 interface BlockAggregate {
   date: string;
   block_height: number;
@@ -11,7 +17,7 @@ interface BlockAggregate {
   total_sats: number;
 }
 
-function BlocksGraph() {
+function P2PKBlocksGraph() {
   const { data, isLoading, error } = useQuery({
     queryKey: ['aggregates'],
     queryFn: async () => {
@@ -118,4 +124,4 @@ function BlocksGraph() {
   );
 }
 
-export default BlocksGraph; 
+export default P2PKBlocksGraph; 

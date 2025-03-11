@@ -73,6 +73,7 @@ async fn process_blocks(
     db: Arc<sled::Db>,
     sqlite_persistence: persistence::SQLitePersistence,
     block_processed_tx: crossbeam_channel::Sender<u32>,
+    sse_sender: broadcast::Sender<BlockAggregateOutput>,
     initial_p2pk_addresses: i32,
     initial_p2pk_coins: i64,
 ) -> Result<(), AppError> {
@@ -138,6 +139,11 @@ async fn process_blocks(
 
         // Signal that we've processed this block
         block_processed_tx.send(height as u32)?;
+
+        // Send SSE notification
+        if let Err(err) = sse_sender.send(block_data.clone()) {
+            error!("Failed to send SSE: {:?}", err);
+        }
     }
 
     Ok(())
@@ -242,7 +248,7 @@ async fn main() -> Result<(), AppError> {
         .unwrap_or(true);
 
     if run_analysis {
-        run_nakamoto_analysis().await?;
+        run_nakamoto_analysis(tx.clone()).await?;
     } else {
         // Wait for shutdown signal instead of pending forever
         shutdown_signal().await;
@@ -251,7 +257,7 @@ async fn main() -> Result<(), AppError> {
     Ok(())
 }
 
-async fn run_nakamoto_analysis() -> Result<(), AppError> {
+async fn run_nakamoto_analysis(sse_sender: broadcast::Sender<BlockAggregateOutput>) -> Result<(), AppError> {
     
     info!("Initializing sled key-value store to track P2PK transactions...");
     let db = sled::open("db")?;
@@ -307,9 +313,13 @@ async fn run_nakamoto_analysis() -> Result<(), AppError> {
     info!("Spawning client thread...");
     // Spawn the client thread
     let client_rx = spawn_thread(move || {
-        client
-            .run(cfg)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        match client.run(cfg) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                error!("Nakamoto client encountered an error: {:?}", e);
+                Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            }
+        }
     });
 
     info!("Waiting for peers to connect...");
@@ -330,6 +340,7 @@ async fn run_nakamoto_analysis() -> Result<(), AppError> {
                 db_clone,
                 sqlite_persistence,
                 block_processed_tx,
+                sse_sender,
                 p2pk_addresses,
                 p2pk_coins,
             )

@@ -16,9 +16,18 @@ function BlockStream() {
   useEffect(() => {
     const eventSource = new EventSource(API_ENDPOINTS.blockStream);
 
+    eventSource.onopen = () => {
+      console.log('Connected to SSE server successfully.');
+    };
+
     eventSource.onmessage = (event) => {
       const newBlock = JSON.parse(event.data) as BlockAggregate;
+      console.log('New block received:', newBlock);
       setBlocks((prevBlocks) => [...prevBlocks, newBlock].slice(-50)); // Keep last 50 blocks
+    };
+
+    eventSource.onerror = (error) => {
+      console.error('Error with SSE connection:', error);
     };
 
     return () => {
