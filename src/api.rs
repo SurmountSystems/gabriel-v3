@@ -57,12 +57,12 @@ pub async fn get_latest_block_aggregates(
     let address_type = params.get("address_type")
         .and_then(|s| s.parse::<BtcAddressType>().ok());
     
-    // Parse num_blocks from query params, default to None (which will be 10)
-    let num_blocks = params.get("num_blocks")
+    // Parse num_latest_blocks from query params, default to None (which returns all blocks)
+    let num_latest_blocks = params.get("num_latest_blocks")
         .and_then(|s| s.parse::<i64>().ok());
 
     let aggregates = state.db
-        .get_latest_block_aggregates(address_type, num_blocks)
+        .get_latest_block_aggregates(address_type, num_latest_blocks)
         .await
         .unwrap_or_default();
 
