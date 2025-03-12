@@ -61,8 +61,12 @@ pub async fn get_latest_block_aggregates(
     let num_latest_blocks = params.get("num_latest_blocks")
         .and_then(|s| s.parse::<i64>().ok());
 
+    // Parse result_sampling_interval from query params, default to None (which returns every 10th result)
+    let result_sampling_interval = params.get("result_sampling_interval")
+        .and_then(|s| s.parse::<i64>().ok());
+
     let aggregates = state.db
-        .get_latest_block_aggregates(address_type, num_latest_blocks)
+        .get_latest_block_aggregates(address_type, num_latest_blocks, result_sampling_interval)
         .await
         .unwrap_or_default();
 
