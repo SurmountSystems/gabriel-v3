@@ -9,8 +9,6 @@ gabriel-v3
 - [3. Build and run Gabriel](#3-build-and-run-gabriel)
     - [3.0.1. Backend (Rust)](#301-backend-rust)
     - [3.0.2. Frontend (React)](#302-frontend-react)
-      - [3.0.2.1. Development Mode](#3021-development-mode)
-    - [3.0.3. Production Mode](#303-production-mode)
 - [4. Inspect Block Aggregate data in SQLite](#4-inspect-block-aggregate-data-in-sqlite)
 - [5. Export Block Aggregate data to CSV](#5-export-block-aggregate-data-to-csv)
 - [6. API Documentation](#6-api-documentation)
@@ -95,19 +93,20 @@ Set appropriate environment variables as follows:
     - directory to save captured images
   
 ```bash
-# Build and run Gabriel in debug mode
+$ (cd web && npm install && npm run build)
 $ cargo build
-$ cargo run
+$ cargo run --release
 ```
 
 #### 3.0.2. Frontend (React)
-The web application can be run in either development or production mode:
+The React web application is rendered by the Rust backend server.
 
-##### 3.0.2.1. Development Mode
+Alternatively, you can run the React web application in development mode:
+
 Run the React development server (with hot reloading):
 ```bash
 $ cd web
-$ export GABRIEL_API_BASE_URL=http://localhost:3000
+$ export GABRIEL_REACT_APP_BASE_URL=http://0.0.0.0:3000
 $ export PORT=3001 
 $npm start
 ```
@@ -115,17 +114,6 @@ This will:
 - Start the React dev server on port 3001
 - Enable hot reloading for frontend changes
 - Connect to the Rust backend API on port 3000
-
-#### 3.0.3. Production Mode
-Build and serve the React app through the Rust server:
-```bash
-cd web
-npm run build
-cd ..
-cargo run --release
-```
-
-Note: The backend API server always runs on port 3000. In development mode, the React frontend runs on port 3001 and proxies API requests to port 3000.
   
 
 ## 4. Inspect Block Aggregate data in SQLite
@@ -197,25 +185,29 @@ Example responses:
 
 ```bash
 # Get latest 10 blocks for P2PK (default)
-curl "http://localhost:3000/api/blocks/latest"
+curl "http://0.0.0.0:3000/api/blocks/latest"
 
 # Get latest 20 blocks for P2PK
-curl "http://localhost:3000/api/blocks/latest?num_blocks=20"
+curl "http://0.0.0.0:3000/api/blocks/latest?num_blocks=20"
 
 # Get latest 10 blocks for P2TR
-curl "http://localhost:3000/api/blocks/latest?address_type=p2tr"
+curl "http://0.0.0.0:3000/api/blocks/latest?address_type=p2tr"
 
 # Get latest 15 blocks for P2TR
-curl "http://localhost:3000/api/blocks/latest?address_type=p2tr&num_blocks=15"
+curl "http://0.0.0.0:3000/api/blocks/latest?address_type=p2tr&num_blocks=15"
 
 # Get block by hash
-curl "http://localhost:3000/api/block/hash/000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+curl "http://0.0.0.0:3000/api/block/hash/000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
 
 # Get block by height
-curl "http://localhost:3000/api/block/height/0"
+curl "http://0.0.0.0:3000/api/block/height/0"
 
 # Stream new blocks (requires curl 7.68.0+ for EventStream support)
-curl -N "http://localhost:3000/api/blocks/stream"
+curl -N "http://0.0.0.0:3000/api/blocks/stream"
+
+# Generate latest P2PK chart
+curl -X PUT "http://0.0.0.0:3000/api/chart/p2pk/generate/latest"
+
 ```
 
 

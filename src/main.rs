@@ -194,13 +194,14 @@ async fn run_apis_and_web_app(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Define your API routes
+    // Define your API routes with CORS enabled
     let api_routes = Router::new()
         .route("/blocks/latest", get(api::get_latest_block_aggregates))
         .route("/block/hash/:hash", get(api::get_block_by_hash))
         .route("/block/height/:height", get(api::get_block_by_height))
         .route("/blocks/stream", get(api::stream_blocks))
-        .route("/chart/p2pk/generate/latest", put(api::generate_latest_p2pk_chart));
+        .route("/chart/p2pk/generate/latest", put(api::generate_latest_p2pk_chart))
+        .layer(cors_layer.clone()); // Apply CORS layer to API routes
 
     // Define the router for static files
     let static_files_router = Router::new()
