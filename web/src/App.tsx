@@ -1,5 +1,7 @@
+import React from 'react';
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import BlocksGraph from './components/BlocksGraph';
+import P2PKBlocksGraph from './components/P2PKBlocksGraph';
 import BlockStream from './components/BlockStream';
 import './App.css';
 
@@ -7,8 +9,8 @@ const queryClient = new QueryClient();
 
 function App() {
   return (
-    <>
-      <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={queryClient}>
+      <Router>
         <div className="container mx-auto p-4">
           <img 
             src="/surmount_logo.png" 
@@ -29,19 +31,24 @@ function App() {
           >
             Bitcoin UTXO Analysis
           </h1>
-          <div 
-            className="grid gap-4" 
-            style={{ 
-              marginLeft: '48px',
-              marginTop: '42px'
-            }}
-          >
-            <BlocksGraph />
-            <BlockStream />
-          </div>
+          <Routes>
+            <Route path="/p2pk-blocks-graph" element={<P2PKBlocksGraph />} />
+            <Route path="/" element={
+              <div 
+                className="grid gap-4" 
+                style={{ 
+                  marginLeft: '48px',
+                  marginTop: '42px'
+                }}
+              >
+                <P2PKBlocksGraph />
+                <BlockStream />
+              </div>
+            } />
+          </Routes>
         </div>
-      </QueryClientProvider>
-    </>
+      </Router>
+    </QueryClientProvider>
   );
 }
 

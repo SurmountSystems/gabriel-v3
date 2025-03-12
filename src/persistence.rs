@@ -1,6 +1,6 @@
 use std::env;
 
-use log::info;
+use log::{info, debug};
 use sqlx::migrate::MigrateDatabase;
 use sqlx::{Pool, Row, Sqlite};
 
@@ -93,25 +93,46 @@ impl SQLitePersistence {
         Ok(result.rows_affected())
     }
 
+    /*
+     * Returns the latest block aggregates for the given address type.
+     * Query params:
+     * - address_type: The type of address to get the latest block aggregates for. Default is P2PK.
+     * - num_latest_blocks: The number of latest blocks to return.  ie:
+     *   - num_latest_blocks = None: Returns all blocks (default)
+     *   - num_latest_blocks = Some(1): Returns the latest block only
+     *   - num_latest_blocks = Some(10): Returns the latest 10 blocks only
+     * - result_sampling_interval: The interval at which to sample the results. Default is 10. ie:
+     *   - result_sampling_interval = None: Returns every 10th result (default)
+     *   - result_sampling_interval = Some(100): Returns every 100th result
+     */
     pub async fn get_latest_block_aggregates(
         &self,
         btc_address_type: Option<BtcAddressType>,
-        num_blocks: Option<i64>
+        num_latest_blocks: Option<i64>,
+        result_sampling_interval: Option<i64>
     ) -> anyhow::Result<Vec<BlockAggregateOutput>> {
         let btc_address_type = btc_address_type.unwrap_or(BtcAddressType::P2PK);
         let table_name = format!("{}_utxo_block_aggregates", btc_address_type.to_string().to_lowercase());
-        let num_blocks = num_blocks.unwrap_or(10);
-        
+        let num_latest_blocks = num_latest_blocks.unwrap_or(0);
+        let result_sampling_interval = result_sampling_interval.unwrap_or(10);
+
+        // Conditional Logic: The CASE WHEN $1 > 0 THEN $1 ELSE MAX(block_height) END part of the query checks if num_blocks is greater than 0.
+        // If it is, it uses num_blocks to calculate the range.
+        // If num_blocks is 0, it effectively sets the condition to block_height > 0, which includes all records.
         let results = sqlx::query(&format!(
             "SELECT date, block_height, block_hash_big_endian, total_utxos, total_sats 
-             FROM {} 
-             WHERE block_height > (SELECT MAX(block_height) - $1 FROM {})
-             ORDER BY block_height ASC",
+            FROM {} 
+            WHERE block_height > (SELECT MAX(block_height) - CASE WHEN $1 > 0 THEN $1 ELSE MAX(block_height) END FROM {})
+            AND block_height % $2 = 0
+            ORDER BY block_height ASC",
             table_name, table_name
         ))
-        .bind(num_blocks)
+        .bind(num_latest_blocks)
+        .bind(result_sampling_interval)
         .fetch_all(&self.pool)
         .await?;
+
+        debug!("get_latest_block_aggregates: address_type = {}; num_latest_blocks = {}; result_sampling_interval = {}; total_results_count = {}", btc_address_type, num_latest_blocks, result_sampling_interval, results.len() );
 
         Ok(results
             .into_iter()

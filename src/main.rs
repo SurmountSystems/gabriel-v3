@@ -1,35 +1,40 @@
 use std::{
-    env,
-    net,
+    env, net,
+    sync::LazyLock,
     sync::{mpsc, Arc},
     thread,
 };
 
-use chrono::{Utc, TimeZone};
+use axum::{
+    http::HeaderValue,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, put, Router},
+};
+use chrono::{TimeZone, Utc};
 use crossbeam_channel::bounded;
+use log::{debug, error, info};
 use nakamoto::client::{
     network::{Network, Services},
     traits::Handle,
     Client, Config,
 };
-use thiserror::Error;
-use log::{info, debug, error};
-
-use tokio::sync::broadcast;
-use tokio::signal;
-use axum::{
-    http::{HeaderValue, Method, header::HeaderName},
-    routing::{get, Router} 
-};
+use serde_json::json;
+use std::fmt;
 use std::net::SocketAddr;
+use thiserror::Error;
+use tokio::signal;
+use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
+use tower_http::cors::{CorsLayer, Any};
+use env_logger;
 
+use crate::util::{capture_p2pk_blocks_graph, BlockAggregateOutput, BtcAddressType};
 use api::AppState;
-use crate::util::{BlockAggregateOutput, BtcAddressType};
 
+mod api;
 mod persistence;
 mod util;
-mod api;
 
 /// The network reactor we're going to use.
 type Reactor = nakamoto::net::poll::Reactor<net::TcpStream>;
@@ -54,6 +59,14 @@ pub enum AppError {
     CustomError(String),
 }
 
+// Get CHART_CAPTURE_FREQUENCY_BLOCKS from the environment or default to 3
+static CAPTURE_FREQUENCY: LazyLock<usize> = LazyLock::new(|| {
+    env::var("CHART_CAPTURE_FREQUENCY_BLOCKS")
+        .unwrap_or_else(|_| "3".to_string())
+        .parse()
+        .expect("CHART_CAPTURE_FREQUENCY_BLOCKS must be a valid number")
+});
+
 /// Function to spawn a thread and handle errors asynchronously
 fn spawn_thread<F>(task: F) -> mpsc::Receiver<Result<(), Box<dyn std::error::Error + Send + Sync>>>
 where
@@ -73,6 +86,7 @@ async fn process_blocks(
     db: Arc<sled::Db>,
     sqlite_persistence: persistence::SQLitePersistence,
     block_processed_tx: crossbeam_channel::Sender<u32>,
+    sse_sender: broadcast::Sender<BlockAggregateOutput>,
     initial_p2pk_addresses: i32,
     initial_p2pk_coins: i64,
 ) -> Result<(), AppError> {
@@ -124,7 +138,8 @@ async fn process_blocks(
 
         // Persist the block data to the SQLite database
         let block_data = BlockAggregateOutput {
-            date: Utc.timestamp_opt(block.header.time as i64, 0)
+            date: Utc
+                .timestamp_opt(block.header.time as i64, 0)
                 .unwrap()
                 .format("%Y-%m-%d %H:%M:%S UTC")
                 .to_string(),
@@ -134,61 +149,76 @@ async fn process_blocks(
             total_sats: p2pk_satoshis as f64,
         };
 
-        sqlite_persistence.persist_block_aggregates(BtcAddressType::P2PK.as_str().to_string(), &block_data).await?;
+        sqlite_persistence
+            .persist_block_aggregates(BtcAddressType::P2PK.as_str().to_string(), &block_data)
+            .await?;
 
         // Signal that we've processed this block
         block_processed_tx.send(height as u32)?;
+
+        // Send SSE notification
+        if let Err(err) = sse_sender.send(block_data.clone()) {
+            error!("Failed to send SSE: {:?}", err);
+        }
+
+        // Capture the chart as an image
+        if height % *CAPTURE_FREQUENCY as u64 == 0 {
+            capture_p2pk_blocks_graph(height as usize).await?;
+        }
     }
 
     Ok(())
 }
 
-async fn run_apis_and_web_app(sender: broadcast::Sender<BlockAggregateOutput>) -> anyhow::Result<()> {
+async fn run_apis_and_web_app(
+    sender: broadcast::Sender<BlockAggregateOutput>,
+) -> anyhow::Result<()> {
+
     // Create a SQLite persistence instance with a connection pool
     let sqlite_persistence = persistence::SQLitePersistence::new(5).await?;
 
     let app_state = Arc::new(AppState {
         db: sqlite_persistence,
-        sender: sender,
+        sender: sender
     });
 
     // Determine socket that web_app will bind top
-    let web_addr: SocketAddr = env::var("WEB_SOCKET_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
+    let web_addr: SocketAddr = env::var("GABRIEL_SOCKET_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:3000".to_string())
         .parse()
         .expect("Failed to parse API_ADDR");
     info!("REST API listening on {}", web_addr);
 
-    // Define common API routes
-    let api_routes = Router::new()
-        .route("/api/blocks/latest", get(api::get_latest_block_aggregates))
-        .route("/api/block/hash/:hash", get(api::get_block_by_hash))
-        .route("/api/block/height/:height", get(api::get_block_by_height))
-        .route("/api/blocks/stream", get(api::stream_blocks));
+    let cors_layer = CorsLayer::new()
+        .allow_origin("*".parse::<HeaderValue>().unwrap())
+        .allow_methods(Any)
+        .allow_headers(Any);
 
-    let web_app_router = if cfg!(debug_assertions) {
-        // In debug mode, proxy requests to React dev server
-        info!("debug_assertions = true; enabling CORS for localhost development");
-        api_routes
-            .nest_service("/", tower_http::services::ServeDir::new("web/public"))
-            .layer(
-                tower_http::cors::CorsLayer::new()
-                    .allow_origin("*".parse::<HeaderValue>().unwrap())
-                    .allow_methods(tower_http::cors::Any)
-                    .allow_headers(tower_http::cors::Any)
-            )
-    } else {
-        // In release mode, serve the built files
-        api_routes
-            .nest_service("/", ServeDir::new("web/build"))
-    };
+    // Define your API routes with CORS enabled
+    let api_routes = Router::new()
+        .route("/blocks/latest", get(api::get_latest_block_aggregates))
+        .route("/block/hash/:hash", get(api::get_block_by_hash))
+        .route("/block/height/:height", get(api::get_block_by_height))
+        .route("/blocks/stream", get(api::stream_blocks))
+        .route("/chart/p2pk/generate/latest", put(api::generate_latest_p2pk_chart))
+        .layer(cors_layer.clone()); // Apply CORS layer to API routes
+
+    // Define the router for static files
+    let static_files_router = Router::new()
+        .nest_service("/", ServeDir::new("web/build").append_index_html_on_directories(true))
+        .layer(cors_layer.clone());
+
+    // Combine the routers
+    let app = Router::new()
+        .nest("/api", api_routes) // Nest API routes under /api
+        .fallback_service(static_files_router.into_service()); // Serve static files for all other routes
 
     // Spawn the web app server in the background
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(web_addr).await.unwrap();
         axum::serve(
             listener,
-            web_app_router.with_state(app_state).into_make_service()
+            app.with_state(app_state).into_make_service(),
         )
         .await
         .unwrap();
@@ -226,11 +256,9 @@ async fn shutdown_signal() {
 /// Run the light-client.
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    // Initialize env_logger with default level of info
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .filter_module("p2p", log::LevelFilter::Warn)
-        .init();
+
+    // Initialize the logger with a default configuration that can be overridden by RUST_LOG
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,p2p=warn")).init();
 
     // Create a broadcast channel for SSE events and start the API server
     let (tx, _rx) = broadcast::channel(100);
@@ -242,7 +270,7 @@ async fn main() -> Result<(), AppError> {
         .unwrap_or(true);
 
     if run_analysis {
-        run_nakamoto_analysis().await?;
+        run_nakamoto_analysis(tx.clone()).await?;
     } else {
         // Wait for shutdown signal instead of pending forever
         shutdown_signal().await;
@@ -251,35 +279,42 @@ async fn main() -> Result<(), AppError> {
     Ok(())
 }
 
-async fn run_nakamoto_analysis() -> Result<(), AppError> {
-    
+async fn run_nakamoto_analysis(
+    sse_sender: broadcast::Sender<BlockAggregateOutput>,
+) -> Result<(), AppError> {
     info!("Initializing sled key-value store to track P2PK transactions...");
     let db = sled::open("db")?;
     let db = Arc::new(db); // Wrap in Arc for thread-safe sharing
 
     info!("Initializing sqlite to store block data");
-    let sqlite_persistence = persistence::SQLitePersistence::new(1).await.map_err(|e| AppError::SqliteError(e))?;
+    let sqlite_persistence = persistence::SQLitePersistence::new(1)
+        .await
+        .map_err(|e| AppError::SqliteError(e))?;
 
     // Get the last block height from the sqlite database
     let resume_height = {
-        let last_height = sqlite_persistence.get_last_block_height(BtcAddressType::P2PK.as_str().to_string()).await?;
+        let last_height = sqlite_persistence
+            .get_last_block_height(BtcAddressType::P2PK.as_str().to_string())
+            .await?;
         debug!("Last height from database: {:?}", last_height);
         match last_height {
             Some(height) => height.checked_add(1).unwrap_or(1) as u64,
-            None => 0 // If the database is empty, start from the first block
+            None => 0, // If the database is empty, start from the first block
         }
     };
 
     // Get the total utxos and sats from the last processed block
     let (p2pk_addresses, p2pk_coins) = {
         if resume_height > 0 {
-            let last_block = sqlite_persistence.get_block_by_height(BtcAddressType::P2PK.as_str().to_string(), (resume_height - 1) as i64).await?;
+            let last_block = sqlite_persistence
+                .get_block_by_height(
+                    BtcAddressType::P2PK.as_str().to_string(),
+                    (resume_height - 1) as i64,
+                )
+                .await?;
             match last_block {
-                Some(block) => (
-                    block.total_utxos as i32,
-                    block.total_sats as i64
-                ),
-                None => (0, 0)
+                Some(block) => (block.total_utxos as i32, block.total_sats as i64),
+                None => (0, 0),
             }
         } else {
             (0, 0)
@@ -306,15 +341,21 @@ async fn run_nakamoto_analysis() -> Result<(), AppError> {
 
     info!("Spawning client thread...");
     // Spawn the client thread
-    let client_rx = spawn_thread(move || {
-        client
-            .run(cfg)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    let client_rx = spawn_thread(move || match client.run(cfg) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            error!("Nakamoto client encountered an error: {:?}", e);
+            Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        }
     });
 
-    info!("Waiting for peers to connect...");
-    header_handle.wait_for_peers(4, Services::Chain)?;
-    info!("Connected to 4 peers.");
+    // Read the peer count from the environment variable, defaulting to 4 if not set
+    let peer_count: usize = env::var("NAKAMOTO_PEER_COUNT")
+        .ok()
+        .and_then(|val| val.parse().ok())
+        .unwrap_or(4);
+    info!("Waiting for {} peer(s) to connect...", peer_count);
+    header_handle.wait_for_peers(peer_count, Services::Chain)?;
 
     info!("Fetching initial tip height...");
     let (mut tip_height, _) = header_handle.get_tip()?;
@@ -330,6 +371,7 @@ async fn run_nakamoto_analysis() -> Result<(), AppError> {
                 db_clone,
                 sqlite_persistence,
                 block_processed_tx,
+                sse_sender,
                 p2pk_addresses,
                 p2pk_coins,
             )
@@ -430,4 +472,23 @@ async fn run_nakamoto_analysis() -> Result<(), AppError> {
 
     info!("Program completed successfully.");
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: StatusCode,
+    pub message: String,
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = json!({ "error": self.message });
+        (self.status, axum::Json(body)).into_response()
+    }
 }

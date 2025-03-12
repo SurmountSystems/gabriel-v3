@@ -1,3 +1,10 @@
+use crate::AppError;
+use log::{info, error};
+use std::env;
+use std::path::PathBuf;
+use std::process::Command;
+use anyhow::Result;
+
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct BlockAggregateOutput {
     pub date: String,
@@ -40,4 +47,24 @@ impl fmt::Display for BtcAddressType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
+}
+
+pub async fn capture_p2pk_blocks_graph(block_height: usize) -> Result<(), AppError> {
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let js_path = PathBuf::from(manifest_dir).join("web/scripts/captureChart.js");
+
+    info!("Executing JavaScript script at {}", js_path.display());
+
+    // Execute the command in fire-and-forget mode
+    let child = Command::new("node")
+        .arg(js_path)
+        .arg(block_height.to_string())
+        .spawn();
+
+    match child {
+        Ok(_) => info!("JavaScript execution started successfully"),
+        Err(e) => error!("Failed to start JavaScript execution: {}", e),
+    }
+
+    Ok(())
 }
