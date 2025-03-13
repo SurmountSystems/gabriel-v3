@@ -6,7 +6,10 @@
      const args = process.argv.slice(2);
      const blockNum = args.length > 0 ? args[0] : "LATEST";
 
-     const browser = await puppeteer.launch({ headless: true });
+     const browser = await puppeteer.launch({ 
+         headless: true,
+         args: ['--no-sandbox', '--disable-setuid-sandbox']
+     });
      const page = await browser.newPage();
 
      // Gabriel running in dev mode:  http://0.0.0.0:3001
