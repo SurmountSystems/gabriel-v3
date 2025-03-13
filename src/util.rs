@@ -50,7 +50,8 @@ impl fmt::Display for BtcAddressType {
 }
 
 pub async fn capture_p2pk_blocks_graph(block_height: usize) -> Result<(), AppError> {
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    // Cargo automatically sets this environment variable with `cargo build`
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let js_path = PathBuf::from(manifest_dir).join("web/scripts/captureChart.js");
 
     info!("Executing JavaScript script at {}", js_path.display());
