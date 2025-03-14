@@ -2,7 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import P2PKBlocksGraph from './components/P2PKBlocksGraph';
-import BlockStream from './components/BlockStream';
+import BlockVisualizer from './components/BlockVisualizer';
 import './App.css';
 
 const queryClient = new QueryClient();
@@ -42,7 +42,7 @@ function App() {
                 }}
               >
                 <P2PKBlocksGraph />
-                <BlockStream />
+                <BlockVisualizer />
               </div>
             } />
           </Routes>
