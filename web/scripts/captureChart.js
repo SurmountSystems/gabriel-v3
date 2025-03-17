@@ -12,6 +12,9 @@
      });
      const page = await browser.newPage();
 
+     // Set the viewport size to ensure the entire chart is visible
+     await page.setViewport({ width: 1200, height: 800 });
+
      // Gabriel running in dev mode:  http://0.0.0.0:3001
      // Gabriel running in release mode: http://0.0.0.0:3000
      const reactAppSocketAddr = process.env.GABRIEL_REACT_APP_BASE_URL || 'http://0.0.0.0:3000';
@@ -49,7 +52,16 @@
 
      // Capture the chart as an image
      const chartElement = await page.$('#chart-container');
-     await chartElement.screenshot({ path: `${imageDirPath}/p2pk_chart_${blockNum}.png` });
+     const boundingBox = await chartElement.boundingBox();
+     await chartElement.screenshot({
+       path: `${imageDirPath}/p2pk_chart_${blockNum}.png`,
+       clip: {
+         x: 0,
+         y: 0,
+         width: boundingBox.width,
+         height: boundingBox.height
+       }
+     });
      console.log(`Chart captured and written to ${imageDirPath}/p2pk_chart_${blockNum}.png`);
      await browser.close();
    })();
