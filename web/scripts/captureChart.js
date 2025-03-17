@@ -58,7 +58,7 @@
        clip: {
          x: 0,
          y: 0,
-         width: boundingBox.width,
+         width: boundingBox.width + 50,
          height: boundingBox.height
        }
      });
