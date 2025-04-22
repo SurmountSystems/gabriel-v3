@@ -5,6 +5,8 @@ gabriel-v3
     - [2.0.1. Hardware](#201-hardware)
     - [2.0.2. Software](#202-software)
       - [2.0.2.1. Rust](#2021-rust)
+      - [Node JS](#node-js)
+      - [OS packages](#os-packages)
       - [2.0.2.2. SQLite client](#2022-sqlite-client)
 - [3. Build and run Gabriel](#3-build-and-run-gabriel)
     - [3.0.1. Backend (Rust)](#301-backend-rust)
@@ -33,6 +35,21 @@ Gabriel requires a stable broadband connection to the internet.
 ##### 2.0.2.1. Rust
 Gabriel is written in Rust.
 The best way to install Rust is to use [rustup](https://rustup.rs).
+
+##### Node JS
+Gabriel includes a ReactJS web frontend.
+
+Gabriel also includes functionality to automatically capture UTXO dashboard charts as png files when a new block is evaluated.
+This chart capture functionality is written in Nodejs.
+
+Subsequently, you'll need to install `nodejs` and `npm` as per your operating system.
+ie (for Debian ):  `sudo apt install -y nodejs npm`
+
+##### OS packages
+
+```
+# apt install libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxdamage1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2
+```
 
 ##### 2.0.2.2. SQLite client
   
@@ -66,9 +83,9 @@ Set appropriate environment variables as follows:
     - optional
     - default path is "db" directory in project root dir
     - ie: /path/to/gabriel_p2pk.db
-  - GABRIEL_REACT_APP_BASE_URL
+  - REACT_APP_API_BASE_URL
     - optional
-    - defaults to "http://0.0.0.0:3000"  (which corresponds to running in release mode)
+    - defaults to "http://0.0.0.0:3000"  (which corresponds to running in release mode in a local environment)
     - set to "http://0.0.0.0:3001" when running in development mode
   - RUN_NAKAMOTO_ANALYSIS
     - optional

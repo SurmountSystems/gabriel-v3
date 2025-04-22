@@ -1,0 +1,14 @@
+  .block-visualizer {
+    display: flex;
+    flex-direction: column; /* Stack children vertically */
+    align-items: left;
+    position: relative; /* Relative positioning for internal elements */
+    min-height: 50vh; /* Ensure full viewport height */
+  }
+
+  .block-visualizer-canvas {
+    display: flex;
+    justify-content: center; /* Center horizontally */
+    margin-top: 0px; /* Add space between the <h2> and the canvas */
+    width: 100%; /* Full width to ensure centering */
+  }

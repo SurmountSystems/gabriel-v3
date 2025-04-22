@@ -102,32 +102,30 @@ function P2PKBlocksGraph() {
   return (
     <div id="chart-container" className="relative w-full">
       <h2 className="text-xl font-bold mb-4">P2PK UTXO Aggregates Over Time</h2>
-      <LineChart width={800} height={400} data={chartData} margin={{ top: 15, right: 100, bottom: 90, left: 50 }}>
+      <LineChart width={1200} height={600} data={chartData} margin={{ top: 15, right: 100, bottom: 90, left: 50 }}>
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis
-          dataKey="date"
-          tickFormatter={(timeStr) => {
-            const date = new Date(timeStr);
-            return date.toISOString().split('T')[0];
-          }}
+          dataKey="block_height"
+          tickFormatter={(height) => height.toString()}
           angle={-90}
           textAnchor="end"
           height={60}
+          style={{ fontSize: '15px', fill: '#8884d8' }}
           label={{
-            value: "Block Date",
+            value: "Block Height",
             position: "bottom",
-            offset: 65
+            offset: 45
           }}
         />
         <YAxis
           yAxisId="left"
         />
         <text
-          x={90}
-          y={230}
+          x={15}
+          y={200}
           textAnchor="middle"
           transform="rotate(-90, 20, 200)"
-          style={{ fontSize: '15px', fill: '#8884d8' }}
+          style={{ fontSize: '18px', fill: '#8884d8' }}
         >
           Number of UTXOs
         </text>
@@ -139,6 +137,8 @@ function P2PKBlocksGraph() {
             maximumFractionDigits: 2
           })}
         />
+
+        {/* The functionality that displays details when hovering of the graph is the tooltip component. */}
         <Tooltip
           formatter={(value: number, name: string, props: any) => {
             const formattedValue = name === "Total Value (BTC)"
@@ -180,11 +180,13 @@ function P2PKBlocksGraph() {
             return null;
           }}
         />
+
+        {/* The legend component displays the legend for the graph. */}
         <Legend
           verticalAlign="bottom"
           height={36}
           wrapperStyle={{
-            bottom: "25px",
+            bottom: "60px",
             position: "relative"
           }}
         />
@@ -203,11 +205,11 @@ function P2PKBlocksGraph() {
           name="Total Value (BTC)"
         />
         <text
-          x={700}
-          y={195}
+          x={800}
+          y={-175}
           textAnchor="middle"
           transform="rotate(90, 780, 200)"
-          style={{ fontSize: '15px', fill: '#2e7d32' }}
+          style={{ fontSize: '18px', fill: '#2e7d32' }}
         >
           Total Value (BTC)
         </text>
